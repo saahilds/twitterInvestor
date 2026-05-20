@@ -36,7 +36,7 @@ tests/
 
 ### Prerequisites
 
-- Python 3.12+
+- Python 3.11.x (`snscrape` does not support 3.12+)
 - Git
 
 ---

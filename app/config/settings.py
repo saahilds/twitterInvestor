@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     ignore_replies: bool = True
     ignore_retweets: bool = True
 
-    allowed_tickers: list[str] = Field(
+    allowed_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "AAPL",
             "MSFT",

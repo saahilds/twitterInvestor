@@ -110,7 +110,7 @@ class BotWorker:
             signal = self.parser.parse(tweet.text, source_tweet_id=tweet.tweet_id)
 
             with self.session_factory() as db:
-                    risk_result = self.risk_manager.evaluate(signal, db)
+                risk_result = self.risk_manager.evaluate(signal, db)
                 parsed_signal = ParsedSignal(
                     tweet_pk=tweet.tweet_pk,
                     source_tweet_id=signal.source_tweet_id,
@@ -121,7 +121,7 @@ class BotWorker:
                     score=signal.score,
                     raw_text=signal.raw_text,
                     suggested_trade_usd=signal.suggested_trade_usd,
-                        rejection_reason=None if risk_result.allowed else risk_result.reason,
+                    rejection_reason=None if risk_result.allowed else risk_result.reason,
                 )
                 db.add(parsed_signal)
                 db.flush()
