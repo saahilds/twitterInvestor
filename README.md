@@ -7,7 +7,8 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 ## Features
 
 - Polls a single X account every 5-10 seconds
-- Supports multiple ingestion backends (`snscrape`, `playwright`, `auto` fallback)
+- Uses Playwright only for ingestion (no snscrape dependency)
+- Supports persistent Chrome profile so login session is reused
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
 - Basic risk controls: allowlist, max trade size, cooldown, duplicate prevention
@@ -37,7 +38,7 @@ tests/
 
 ### Prerequisites
 
-- Python 3.11.x (`snscrape` does not support 3.12+)
+- Python 3.11.x
 - Git
 
 ---
@@ -57,7 +58,7 @@ tests/
    uv sync
    ```
 
-3. Install Playwright Chromium browser (used by fallback backend):
+3. Install Playwright browsers:
 
    ```bash
    uv run playwright install chromium
@@ -69,21 +70,29 @@ tests/
    cp .env.example .env
    ```
 
-5. Confirm safety defaults in `.env`:
+5. Configure `.env` for persistent Chrome login:
 
    ```dotenv
    SIMULATION_MODE=true
    ENABLE_LIVE_TRADING=false
    TARGET_ACCOUNT=CKCapitalxx
    POLL_INTERVAL_SECONDS=7
-   TWITTER_BACKEND=auto
+   TWITTER_BACKEND=playwright
+   PLAYWRIGHT_CHANNEL=chrome
+   PLAYWRIGHT_HEADLESS=false
+   PLAYWRIGHT_USER_DATA_DIR=.playwright/x-profile
+   PLAYWRIGHT_REQUIRE_LOGIN=true
    ```
 
-6. Start the app + worker:
+6. Start the app + worker, then complete login once in Chrome:
 
    ```bash
    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
+
+   - On first run, the bot opens Chrome and waits for you to finish X login.
+   - After successful login, session cookies persist in `PLAYWRIGHT_USER_DATA_DIR`.
+   - Next runs reuse the same persistent profile, so you should not need to login again.
 
 7. Optional: run tests:
 
@@ -112,7 +121,7 @@ tests/
 3. Install dependencies manually:
 
    ```bash
-   pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings snscrape playwright robin-stocks python-dotenv pytest pytest-asyncio
+   pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings playwright robin-stocks python-dotenv pytest pytest-asyncio
    playwright install chromium
    ```
 
@@ -162,22 +171,20 @@ Tips for market session monitoring:
   - `signal_rejected` (blocked by risk rules)
   - `trade_executed` (simulation or live execution result)
 
-### Twitter Backend Modes (works with or without snscrape)
+### Twitter Backend Modes
 
 `TWITTER_BACKEND` options:
 
-- `auto` (default): tries `snscrape` first, then falls back to Playwright if snscrape fails
-- `snscrape`: only use snscrape
-- `playwright`: only use Playwright
+- `playwright` (default): use Playwright ingestion
 - `mock`: in-memory fake client for local tests
 
-Why this matters:
+Persistent auth-related env vars:
 
-- snscrape can fail on current X GraphQL endpoints with errors like `blocked (404)`.
-- In `auto` mode, the worker will automatically try Playwright in the same poll cycle.
-- The worker keeps running even if one backend fails, and logs backend failures/successes:
-  - `twitter_backend_failed`
-  - `twitter_backend_success`
+- `PLAYWRIGHT_USER_DATA_DIR`: profile folder used by persistent browser context
+- `PLAYWRIGHT_CHANNEL`: set `chrome` for local Chrome login
+- `PLAYWRIGHT_HEADLESS=false`: needed for manual login
+- `PLAYWRIGHT_REQUIRE_LOGIN=true`: waits for authenticated session on first run
+- `PLAYWRIGHT_LOGIN_TIMEOUT_SECONDS`: max wait for manual login completion
 
 ## API Endpoints
 
@@ -204,7 +211,10 @@ The repo includes a `Dockerfile` and `railway.json`.
 Railway environment variables to configure:
 
 - `TARGET_ACCOUNT` (defaults to `CKCapitalxx`)
-- `TWITTER_BACKEND` (`auto` recommended for snscrape fallback)
+- `TWITTER_BACKEND=playwright`
+- `PLAYWRIGHT_CHANNEL=chromium`
+- `PLAYWRIGHT_HEADLESS=true`
+- `PLAYWRIGHT_REQUIRE_LOGIN=false`
 - `SIMULATION_MODE` (keep `true` until confident)
 - `ENABLE_LIVE_TRADING`
 - `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` (only for live)

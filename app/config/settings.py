@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     fetch_limit: int = 20
     ignore_replies: bool = True
     ignore_retweets: bool = True
-    twitter_backend: Literal["auto", "snscrape", "playwright", "mock"] = "auto"
-    playwright_headless: bool = True
+    twitter_backend: Literal["playwright", "mock"] = "playwright"
+    playwright_headless: bool = False
     playwright_timeout_ms: int = 20_000
+    playwright_user_data_dir: str = ".playwright/x-profile"
+    playwright_channel: str = "chrome"
+    playwright_require_login: bool = True
+    playwright_login_timeout_seconds: int = 300
 
     allowed_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [

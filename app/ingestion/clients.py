@@ -4,19 +4,20 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import re
+import time
 from typing import Protocol
 
 try:
-    import snscrape.modules.twitter as sntwitter
-except Exception:  # pragma: no cover - runtime environment dependent
-    sntwitter = None
-
-try:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.async_api import BrowserContext, Page, Playwright
     from playwright.async_api import async_playwright
 except Exception:  # pragma: no cover - runtime environment dependent
     PlaywrightTimeoutError = None
+    BrowserContext = None  # type: ignore[assignment]
+    Page = None  # type: ignore[assignment]
+    Playwright = None  # type: ignore[assignment]
     async_playwright = None
 
 
@@ -35,89 +36,43 @@ class TwitterClient(Protocol):
         """Fetch most recent tweets for a single account."""
 
 
-class SnscrapeTwitterClient:
-    """Simple snscrape-backed implementation for public account polling."""
-
-    def __init__(self, logger: logging.Logger | None = None) -> None:
-        self.logger = logger
-
-    async def fetch_recent_tweets(self, account: str, limit: int = 20) -> list[TweetData]:
-        return await asyncio.to_thread(self._fetch_sync, account, limit)
-
-    def _fetch_sync(self, account: str, limit: int) -> list[TweetData]:
-        if sntwitter is None:
-            raise RuntimeError("snscrape is unavailable in this environment")
-
-        try:
-            scraper = sntwitter.TwitterUserScraper(account)
-            tweets: list[TweetData] = []
-            for item in scraper.get_items():
-                tweets.append(
-                    TweetData(
-                        tweet_id=str(item.id),
-                        text=item.rawContent,
-                        posted_at=item.date,
-                        is_reply=item.inReplyToTweetId is not None,
-                        is_retweet=item.retweetedTweet is not None,
-                        url=item.url,
-                    )
-                )
-                if len(tweets) >= limit:
-                    break
-            return tweets
-        except Exception as exc:
-            if _looks_like_snscrape_graphql_404(exc):
-                raise RuntimeError("snscrape_blocked_graphql_404") from exc
-            raise
-
-
 class PlaywrightTwitterClient:
-    """Playwright-backed public X profile reader used as fallback path."""
+    """Playwright-backed X profile reader using persistent browser profile."""
 
     status_href_pattern = re.compile(r"/status/(\d+)")
 
-    def __init__(self, timeout_ms: int = 20_000, headless: bool = True) -> None:
+    def __init__(
+        self,
+        timeout_ms: int = 20_000,
+        headless: bool = False,
+        user_data_dir: str = ".playwright/x-profile",
+        channel: str = "chrome",
+        require_login: bool = True,
+        login_timeout_seconds: int = 300,
+        logger: logging.Logger | None = None,
+    ) -> None:
         self.timeout_ms = timeout_ms
         self.headless = headless
+        self.user_data_dir = user_data_dir
+        self.channel = channel
+        self.require_login = require_login
+        self.login_timeout_seconds = login_timeout_seconds
+        self.logger = logger or logging.getLogger("trading_bot")
+
+        self._playwright: Playwright | None = None
+        self._context: BrowserContext | None = None
+        self._page: Page | None = None
+        self._login_checked = False
+        self._lock = asyncio.Lock()
 
     async def fetch_recent_tweets(self, account: str, limit: int = 20) -> list[TweetData]:
         if async_playwright is None:
             raise RuntimeError("playwright is unavailable in this environment")
 
-        url = f"https://x.com/{account}"
-        async with async_playwright() as playwright:
-            browser = await playwright.chromium.launch(headless=self.headless)
-            context = await browser.new_context()
-            page = await context.new_page()
-            try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-                await page.wait_for_selector("article", timeout=self.timeout_ms)
-
-                rows = await page.eval_on_selector_all(
-                    "article",
-                    """(articles) => {
-                      return articles.map((article) => {
-                        const linkNode = article.querySelector('a[href*="/status/"]');
-                        const timeNode = article.querySelector('time');
-                        const tweetTextNode = article.querySelector('[data-testid="tweetText"]');
-                        const text = tweetTextNode ? tweetTextNode.innerText : article.innerText;
-                        return {
-                          href: linkNode ? linkNode.getAttribute('href') : null,
-                          datetime: timeNode ? timeNode.getAttribute('datetime') : null,
-                          text: text || '',
-                          isReply: article.innerText.includes('Replying to'),
-                          isRetweet: article.innerText.includes('Reposted'),
-                        };
-                      });
-                    }""",
-                )
-            except Exception as exc:
-                if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
-                    raise RuntimeError("playwright_timeout_loading_x_profile") from exc
-                raise
-            finally:
-                await context.close()
-                await browser.close()
+        async with self._lock:
+            page = await self._ensure_page()
+            await self._ensure_authenticated(page)
+            rows = await self._fetch_profile_rows(page, account)
 
         tweets: list[TweetData] = []
         seen_ids: set[str] = set()
@@ -145,40 +100,111 @@ class PlaywrightTwitterClient:
                 break
         return tweets
 
+    async def close(self) -> None:
+        async with self._lock:
+            if self._context is not None:
+                await self._context.close()
+                self._context = None
+                self._page = None
+            if self._playwright is not None:
+                await self._playwright.stop()
+                self._playwright = None
 
-class FallbackTwitterClient:
-    """Try multiple Twitter clients in order until one succeeds."""
+    async def _ensure_page(self) -> Page:
+        if self._page is not None:
+            return self._page
 
-    def __init__(self, clients: list[tuple[str, TwitterClient]], logger: logging.Logger) -> None:
-        self.clients = clients
-        self.logger = logger
+        self._playwright = await async_playwright().start()
+        profile_dir = str(Path(self.user_data_dir).expanduser().resolve())
+        browser_channel = self.channel.strip() or None
 
-    async def fetch_recent_tweets(self, account: str, limit: int = 20) -> list[TweetData]:
-        errors: list[str] = []
-        for backend_name, client in self.clients:
-            try:
-                tweets = await client.fetch_recent_tweets(account=account, limit=limit)
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            user_data_dir=profile_dir,
+            channel=browser_channel,
+            headless=self.headless,
+            viewport={"width": 1440, "height": 900},
+        )
+
+        pages = self._context.pages
+        self._page = pages[0] if pages else await self._context.new_page()
+        self.logger.info(
+            "playwright_persistent_context_ready",
+            extra={
+                "event_type": "playwright_context",
+                "profile_dir": profile_dir,
+                "headless": self.headless,
+                "channel": browser_channel or "default",
+            },
+        )
+        return self._page
+
+    async def _ensure_authenticated(self, page: Page) -> None:
+        if self._login_checked or not self.require_login:
+            return
+
+        await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=self.timeout_ms)
+        login_required = await _is_login_required(page)
+        if not login_required:
+            self._login_checked = True
+            self.logger.info(
+                "x_session_already_authenticated",
+                extra={"event_type": "x_auth"},
+            )
+            return
+
+        if self.headless:
+            raise RuntimeError("x_login_required_but_browser_is_headless")
+
+        self.logger.warning(
+            "x_login_required_manual_action",
+            extra={
+                "event_type": "x_auth",
+                "message_hint": "Complete login in opened Chrome window. Session will persist.",
+            },
+        )
+        await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=self.timeout_ms)
+        deadline = time.monotonic() + max(30, self.login_timeout_seconds)
+        while time.monotonic() < deadline:
+            await asyncio.sleep(2)
+            if not await _is_login_required(page):
+                self._login_checked = True
                 self.logger.info(
-                    "twitter_backend_success",
-                    extra={
-                        "event_type": "twitter_backend_success",
-                        "backend": backend_name,
-                        "count": len(tweets),
-                    },
+                    "x_login_completed_and_persisted",
+                    extra={"event_type": "x_auth"},
                 )
-                return tweets
-            except Exception as exc:
-                errors.append(f"{backend_name}:{exc}")
-                self.logger.warning(
-                    "twitter_backend_failed",
-                    extra={
-                        "event_type": "twitter_backend_failed",
-                        "backend": backend_name,
-                        "error": str(exc),
-                    },
-                )
+                return
+        raise RuntimeError("x_login_timeout_waiting_for_manual_auth")
 
-        raise RuntimeError("all_twitter_backends_failed: " + "; ".join(errors))
+    async def _fetch_profile_rows(self, page: Page, account: str) -> list[dict]:
+        url = f"https://x.com/{account}"
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            await page.wait_for_selector("article", timeout=self.timeout_ms)
+            rows = await page.eval_on_selector_all(
+                "article",
+                """(articles) => {
+                  return articles.map((article) => {
+                    const linkNode = article.querySelector('a[href*="/status/"]');
+                    const timeNode = article.querySelector('time');
+                    const tweetTextNode = article.querySelector('[data-testid="tweetText"]');
+                    const text = tweetTextNode ? tweetTextNode.innerText : article.innerText;
+                    return {
+                      href: linkNode ? linkNode.getAttribute('href') : null,
+                      datetime: timeNode ? timeNode.getAttribute('datetime') : null,
+                      text: text || '',
+                      isReply: article.innerText.includes('Replying to'),
+                      isRetweet: article.innerText.includes('Reposted'),
+                    };
+                  });
+                }""",
+            )
+            if isinstance(rows, list):
+                return rows
+            return []
+        except Exception as exc:
+            if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
+                raise RuntimeError("playwright_timeout_loading_x_profile") from exc
+            raise
 
 
 class MockTwitterClient:
@@ -211,6 +237,16 @@ def _extract_status_id(href: str) -> str | None:
     return None
 
 
-def _looks_like_snscrape_graphql_404(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "graphql" in text and "404" in text
+async def _is_login_required(page: Page) -> bool:
+    url = page.url.lower()
+    if "/i/flow/login" in url:
+        return True
+
+    if await page.locator('input[name="text"]').count() > 0:
+        return True
+    if await page.locator('input[name="password"]').count() > 0:
+        return True
+    if await page.locator('a[href="/i/flow/login"]').count() > 0:
+        return True
+
+    return False

@@ -2,6 +2,10 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV TWITTER_BACKEND=playwright
+ENV PLAYWRIGHT_CHANNEL=chromium
+ENV PLAYWRIGHT_HEADLESS=true
+ENV PLAYWRIGHT_REQUIRE_LOGIN=false
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 

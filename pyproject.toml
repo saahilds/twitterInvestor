@@ -10,7 +10,6 @@ dependencies = [
   "sqlalchemy>=2.0.30",
   "pydantic>=2.8.0",
   "pydantic-settings>=2.3.0",
-  "snscrape>=0.7.0.20230622",
   "playwright>=1.54.0",
   "robin-stocks>=3.4.0",
   "python-dotenv>=1.0.1",

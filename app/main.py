@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import inspect
 
 from fastapi import FastAPI
 
@@ -11,10 +12,8 @@ from app.db.session import SessionLocal
 from app.execution.mock_broker import MockBroker
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.clients import (
-    FallbackTwitterClient,
     MockTwitterClient,
     PlaywrightTwitterClient,
-    SnscrapeTwitterClient,
     TwitterClient,
 )
 from app.ingestion.service import TweetIngestionService
@@ -33,26 +32,13 @@ def build_twitter_client() -> TwitterClient:
     if settings.twitter_backend == "mock":
         return MockTwitterClient()
 
-    if settings.twitter_backend == "snscrape":
-        return SnscrapeTwitterClient(logger=logger)
-
-    if settings.twitter_backend == "playwright":
-        return PlaywrightTwitterClient(
-            timeout_ms=settings.playwright_timeout_ms,
-            headless=settings.playwright_headless,
-        )
-
-    return FallbackTwitterClient(
-        clients=[
-            ("snscrape", SnscrapeTwitterClient(logger=logger)),
-            (
-                "playwright",
-                PlaywrightTwitterClient(
-                    timeout_ms=settings.playwright_timeout_ms,
-                    headless=settings.playwright_headless,
-                ),
-            ),
-        ],
+    return PlaywrightTwitterClient(
+        timeout_ms=settings.playwright_timeout_ms,
+        headless=settings.playwright_headless,
+        user_data_dir=settings.playwright_user_data_dir,
+        channel=settings.playwright_channel,
+        require_login=settings.playwright_require_login,
+        login_timeout_seconds=settings.playwright_login_timeout_seconds,
         logger=logger,
     )
 
@@ -103,6 +89,11 @@ async def lifespan(_: FastAPI):
     worker.start()
     yield
     await worker.stop()
+    close_method = getattr(twitter_client, "close", None)
+    if callable(close_method):
+        close_result = close_method()
+        if inspect.isawaitable(close_result):
+            await close_result
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
