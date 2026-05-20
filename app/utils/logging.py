@@ -11,17 +11,29 @@ from app.config.settings import Settings
 class JsonFormatter(logging.Formatter):
     """Small JSON formatter for structured logs."""
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._default_record_fields = set(logging.makeLogRecord({}).__dict__.keys())
+
     def format(self, record: logging.LogRecord) -> str:
         payload = {
+            "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
             "event_type": getattr(record, "event_type", None),
         }
-        for key in ("tweet_id", "ticker", "action", "status", "error", "count", "reason"):
-            value = getattr(record, key, None)
-            if value is not None:
-                payload[key] = value
+        context: dict[str, object] = {}
+        for key, value in record.__dict__.items():
+            if key in self._default_record_fields or key in payload:
+                continue
+            if key.startswith("_") or value is None:
+                continue
+            context[key] = value
+
+        if context:
+            payload["context"] = context
+
         return json.dumps(payload, default=str)
 
 

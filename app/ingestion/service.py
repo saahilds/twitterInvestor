@@ -80,11 +80,34 @@ class TweetIngestionService:
                         is_retweet=tweet.is_retweet,
                     )
                 )
+                self.logger.info(
+                    "new_tweet_detected",
+                    extra={
+                        "event_type": "tweet_ingested",
+                        "tweet_id": tweet.tweet_id,
+                        "account": tweet.account,
+                        "posted_at": tweet.posted_at.isoformat(),
+                        "is_reply": tweet.is_reply,
+                        "is_retweet": tweet.is_retweet,
+                        "tweet_text": self._compact_text(tweet.text),
+                    },
+                )
             db.commit()
 
         if new_tweets:
             self.logger.info(
                 "new_tweets_ingested",
-                extra={"count": len(new_tweets), "account": self.target_account},
+                extra={
+                    "event_type": "ingestion_summary",
+                    "count": len(new_tweets),
+                    "account": self.target_account,
+                },
             )
         return new_tweets
+
+    @staticmethod
+    def _compact_text(text: str, limit: int = 240) -> str:
+        normalized = " ".join(text.split())
+        if len(normalized) <= limit:
+            return normalized
+        return f"{normalized[:limit]}..."

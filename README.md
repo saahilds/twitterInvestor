@@ -34,29 +34,124 @@ tests/
 
 ## Quickstart (Local)
 
-1. Install dependencies:
+### Prerequisites
+
+- Python 3.12+
+- Git
+
+---
+
+### Flow A: Using `uv` (recommended)
+
+1. Clone and enter the repo:
+
+   ```bash
+   git clone <your-repo-url>
+   cd twitterInvestor
+   ```
+
+2. Install dependencies:
 
    ```bash
    uv sync
    ```
 
-2. Configure environment:
+3. Create local env file:
 
    ```bash
    cp .env.example .env
    ```
 
-3. Run app:
+4. Confirm safety defaults in `.env`:
 
-   ```bash
-   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+   ```dotenv
+   SIMULATION_MODE=true
+   ENABLE_LIVE_TRADING=false
+   TARGET_ACCOUNT=CKCapitalxx
+   POLL_INTERVAL_SECONDS=7
    ```
 
-4. Run tests:
+5. Start the app + worker:
+
+   ```bash
+   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+6. Optional: run tests:
 
    ```bash
    uv run pytest
    ```
+
+---
+
+### Flow B: Without `uv` (`venv` + `pip`)
+
+1. Clone and enter the repo:
+
+   ```bash
+   git clone <your-repo-url>
+   cd twitterInvestor
+   ```
+
+2. Create and activate a virtual environment:
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+
+3. Install dependencies manually:
+
+   ```bash
+   pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings snscrape robin-stocks python-dotenv pytest pytest-asyncio
+   ```
+
+4. Create local env file:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+5. Start the app + worker:
+
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+6. Optional: run tests:
+
+   ```bash
+   pytest
+   ```
+
+---
+
+### Seeing Live Tweets in Your Console
+
+When a **new tweet** is detected, you will now see a log event like:
+
+```json
+{
+  "message": "new_tweet_detected",
+  "event_type": "tweet_ingested",
+  "context": {
+    "tweet_id": "1234567890",
+    "account": "CKCapitalxx",
+    "tweet_text": "adding NVDA starter here...",
+    "posted_at": "2026-05-20T13:42:00+00:00"
+  }
+}
+```
+
+Tips for market session monitoring:
+
+- Keep `LOG_LEVEL=INFO` in `.env`
+- Run the server in a dedicated terminal and leave it open during market hours
+- Watch for:
+  - `new_tweet_detected` (new tweet arrived)
+  - `signal_rejected` (blocked by risk rules)
+  - `trade_executed` (simulation or live execution result)
 
 ## API Endpoints
 
