@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     playwright_timeout_ms: int = 20_000
     playwright_user_data_dir: str = ".playwright/x-profile"
     playwright_channel: str = "chrome"
+    playwright_cdp_url: str | None = None
     playwright_require_login: bool = True
     playwright_login_timeout_seconds: int = 300
 

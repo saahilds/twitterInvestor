@@ -47,6 +47,7 @@ class PlaywrightTwitterClient:
         headless: bool = False,
         user_data_dir: str = ".playwright/x-profile",
         channel: str = "chrome",
+        cdp_url: str | None = None,
         require_login: bool = True,
         login_timeout_seconds: int = 300,
         logger: logging.Logger | None = None,
@@ -55,13 +56,16 @@ class PlaywrightTwitterClient:
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
+        self.cdp_url = cdp_url.strip() if cdp_url else None
         self.require_login = require_login
         self.login_timeout_seconds = login_timeout_seconds
         self.logger = logger or logging.getLogger("trading_bot")
 
         self._playwright: Playwright | None = None
+        self._browser = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._attached_via_cdp = False
         self._login_checked = False
         self._lock = asyncio.Lock()
 
@@ -102,10 +106,17 @@ class PlaywrightTwitterClient:
 
     async def close(self) -> None:
         async with self._lock:
-            if self._context is not None:
+            if self._context is not None and not self._attached_via_cdp:
                 await self._context.close()
                 self._context = None
                 self._page = None
+            if self._browser is not None:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    # Connected CDP browser may be managed externally.
+                    pass
+                self._browser = None
             if self._playwright is not None:
                 await self._playwright.stop()
                 self._playwright = None
@@ -115,27 +126,42 @@ class PlaywrightTwitterClient:
             return self._page
 
         self._playwright = await async_playwright().start()
-        profile_dir = str(Path(self.user_data_dir).expanduser().resolve())
-        browser_channel = self.channel.strip() or None
+        if self.cdp_url:
+            self._attached_via_cdp = True
+            self._browser = await self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            contexts = self._browser.contexts
+            self._context = contexts[0] if contexts else await self._browser.new_context()
+            self.logger.info(
+                "playwright_attached_existing_chrome",
+                extra={
+                    "event_type": "playwright_context",
+                    "cdp_url": self.cdp_url,
+                },
+            )
+        else:
+            profile_dir = str(Path(self.user_data_dir).expanduser().resolve())
+            browser_channel = self.channel.strip() or None
 
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=profile_dir,
-            channel=browser_channel,
-            headless=self.headless,
-            viewport={"width": 1440, "height": 900},
-        )
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir=profile_dir,
+                channel=browser_channel,
+                headless=self.headless,
+                ignore_default_args=["--enable-automation"],
+                args=["--disable-blink-features=AutomationControlled"],
+                viewport={"width": 1440, "height": 900},
+            )
+            self.logger.info(
+                "playwright_persistent_context_ready",
+                extra={
+                    "event_type": "playwright_context",
+                    "profile_dir": profile_dir,
+                    "headless": self.headless,
+                    "channel": browser_channel or "default",
+                },
+            )
 
         pages = self._context.pages
         self._page = pages[0] if pages else await self._context.new_page()
-        self.logger.info(
-            "playwright_persistent_context_ready",
-            extra={
-                "event_type": "playwright_context",
-                "profile_dir": profile_dir,
-                "headless": self.headless,
-                "channel": browser_channel or "default",
-            },
-        )
         return self._page
 
     async def _ensure_authenticated(self, page: Page) -> None:
@@ -155,14 +181,25 @@ class PlaywrightTwitterClient:
         if self.headless:
             raise RuntimeError("x_login_required_but_browser_is_headless")
 
-        self.logger.warning(
-            "x_login_required_manual_action",
-            extra={
-                "event_type": "x_auth",
-                "message_hint": "Complete login in opened Chrome window. Session will persist.",
-            },
-        )
-        await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=self.timeout_ms)
+        if self._attached_via_cdp:
+            self.logger.warning(
+                "x_login_required_in_attached_chrome",
+                extra={
+                    "event_type": "x_auth",
+                    "message_hint": "Please login to x.com in your existing Chrome window.",
+                },
+            )
+            await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=self.timeout_ms)
+        else:
+            self.logger.warning(
+                "x_login_required_manual_action",
+                extra={
+                    "event_type": "x_auth",
+                    "message_hint": "Complete login in opened Chrome window. Session will persist.",
+                },
+            )
+            await page.goto("https://x.com/i/flow/login", wait_until="domcontentloaded", timeout=self.timeout_ms)
+
         deadline = time.monotonic() + max(30, self.login_timeout_seconds)
         while time.monotonic() < deadline:
             await asyncio.sleep(2)

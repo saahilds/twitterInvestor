@@ -81,18 +81,31 @@ tests/
    PLAYWRIGHT_CHANNEL=chrome
    PLAYWRIGHT_HEADLESS=false
    PLAYWRIGHT_USER_DATA_DIR=.playwright/x-profile
+   PLAYWRIGHT_CDP_URL=
    PLAYWRIGHT_REQUIRE_LOGIN=true
    ```
 
-6. Start the app + worker, then complete login once in Chrome:
+6. (Recommended if login says browser is not secure) attach to your already-open Chrome:
+
+   ```bash
+   google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.x-bot-chrome"
+   ```
+
+   Then login to X manually in that Chrome window, and set:
+
+   ```dotenv
+   PLAYWRIGHT_CDP_URL=http://127.0.0.1:9222
+   PLAYWRIGHT_REQUIRE_LOGIN=false
+   ```
+
+7. Start the app + worker:
 
    ```bash
    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 
-   - On first run, the bot opens Chrome and waits for you to finish X login.
-   - After successful login, session cookies persist in `PLAYWRIGHT_USER_DATA_DIR`.
-   - Next runs reuse the same persistent profile, so you should not need to login again.
+   - Without `PLAYWRIGHT_CDP_URL`, the bot launches its own persistent Chrome profile.
+   - With `PLAYWRIGHT_CDP_URL`, the bot attaches to your existing Chrome (best for avoiding secure-login restrictions).
 
 7. Optional: run tests:
 
@@ -182,6 +195,7 @@ Persistent auth-related env vars:
 
 - `PLAYWRIGHT_USER_DATA_DIR`: profile folder used by persistent browser context
 - `PLAYWRIGHT_CHANNEL`: set `chrome` for local Chrome login
+- `PLAYWRIGHT_CDP_URL`: attach to an already-running Chrome with remote debugging (recommended when login blocks automated windows)
 - `PLAYWRIGHT_HEADLESS=false`: needed for manual login
 - `PLAYWRIGHT_REQUIRE_LOGIN=true`: waits for authenticated session on first run
 - `PLAYWRIGHT_LOGIN_TIMEOUT_SECONDS`: max wait for manual login completion

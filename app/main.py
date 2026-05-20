@@ -37,6 +37,7 @@ def build_twitter_client() -> TwitterClient:
         headless=settings.playwright_headless,
         user_data_dir=settings.playwright_user_data_dir,
         channel=settings.playwright_channel,
+        cdp_url=settings.playwright_cdp_url,
         require_login=settings.playwright_require_login,
         login_timeout_seconds=settings.playwright_login_timeout_seconds,
         logger=logger,
