@@ -10,7 +10,13 @@ from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.execution.mock_broker import MockBroker
 from app.execution.robinhood_broker import RobinhoodBroker
-from app.ingestion.clients import SnscrapeTwitterClient
+from app.ingestion.clients import (
+    FallbackTwitterClient,
+    MockTwitterClient,
+    PlaywrightTwitterClient,
+    SnscrapeTwitterClient,
+    TwitterClient,
+)
 from app.ingestion.service import TweetIngestionService
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.risk.risk_manager import RiskConfig, RiskManager
@@ -23,7 +29,35 @@ logger = configure_logging(settings)
 
 init_db()
 
-twitter_client = SnscrapeTwitterClient()
+def build_twitter_client() -> TwitterClient:
+    if settings.twitter_backend == "mock":
+        return MockTwitterClient()
+
+    if settings.twitter_backend == "snscrape":
+        return SnscrapeTwitterClient(logger=logger)
+
+    if settings.twitter_backend == "playwright":
+        return PlaywrightTwitterClient(
+            timeout_ms=settings.playwright_timeout_ms,
+            headless=settings.playwright_headless,
+        )
+
+    return FallbackTwitterClient(
+        clients=[
+            ("snscrape", SnscrapeTwitterClient(logger=logger)),
+            (
+                "playwright",
+                PlaywrightTwitterClient(
+                    timeout_ms=settings.playwright_timeout_ms,
+                    headless=settings.playwright_headless,
+                ),
+            ),
+        ],
+        logger=logger,
+    )
+
+
+twitter_client = build_twitter_client()
 ingestion_service = TweetIngestionService(
     twitter_client=twitter_client,
     session_factory=SessionLocal,

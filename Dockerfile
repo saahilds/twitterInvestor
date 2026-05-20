@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY . /app
 
-RUN uv sync --no-dev
+RUN uv sync --no-dev && uv run playwright install --with-deps chromium
 
 EXPOSE 8000
 

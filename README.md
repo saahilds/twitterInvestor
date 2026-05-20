@@ -7,6 +7,7 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 ## Features
 
 - Polls a single X account every 5-10 seconds
+- Supports multiple ingestion backends (`snscrape`, `playwright`, `auto` fallback)
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
 - Basic risk controls: allowlist, max trade size, cooldown, duplicate prevention
@@ -56,28 +57,35 @@ tests/
    uv sync
    ```
 
-3. Create local env file:
+3. Install Playwright Chromium browser (used by fallback backend):
+
+   ```bash
+   uv run playwright install chromium
+   ```
+
+4. Create local env file:
 
    ```bash
    cp .env.example .env
    ```
 
-4. Confirm safety defaults in `.env`:
+5. Confirm safety defaults in `.env`:
 
    ```dotenv
    SIMULATION_MODE=true
    ENABLE_LIVE_TRADING=false
    TARGET_ACCOUNT=CKCapitalxx
    POLL_INTERVAL_SECONDS=7
+   TWITTER_BACKEND=auto
    ```
 
-5. Start the app + worker:
+6. Start the app + worker:
 
    ```bash
    uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 
-6. Optional: run tests:
+7. Optional: run tests:
 
    ```bash
    uv run pytest
@@ -104,7 +112,8 @@ tests/
 3. Install dependencies manually:
 
    ```bash
-   pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings snscrape robin-stocks python-dotenv pytest pytest-asyncio
+   pip install fastapi "uvicorn[standard]" sqlalchemy pydantic pydantic-settings snscrape playwright robin-stocks python-dotenv pytest pytest-asyncio
+   playwright install chromium
    ```
 
 4. Create local env file:
@@ -153,6 +162,23 @@ Tips for market session monitoring:
   - `signal_rejected` (blocked by risk rules)
   - `trade_executed` (simulation or live execution result)
 
+### Twitter Backend Modes (works with or without snscrape)
+
+`TWITTER_BACKEND` options:
+
+- `auto` (default): tries `snscrape` first, then falls back to Playwright if snscrape fails
+- `snscrape`: only use snscrape
+- `playwright`: only use Playwright
+- `mock`: in-memory fake client for local tests
+
+Why this matters:
+
+- snscrape can fail on current X GraphQL endpoints with errors like `blocked (404)`.
+- In `auto` mode, the worker will automatically try Playwright in the same poll cycle.
+- The worker keeps running even if one backend fails, and logs backend failures/successes:
+  - `twitter_backend_failed`
+  - `twitter_backend_success`
+
 ## API Endpoints
 
 - `GET /health`
@@ -178,6 +204,7 @@ The repo includes a `Dockerfile` and `railway.json`.
 Railway environment variables to configure:
 
 - `TARGET_ACCOUNT` (defaults to `CKCapitalxx`)
+- `TWITTER_BACKEND` (`auto` recommended for snscrape fallback)
 - `SIMULATION_MODE` (keep `true` until confident)
 - `ENABLE_LIVE_TRADING`
 - `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` (only for live)

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     fetch_limit: int = 20
     ignore_replies: bool = True
     ignore_retweets: bool = True
+    twitter_backend: Literal["auto", "snscrape", "playwright", "mock"] = "auto"
+    playwright_headless: bool = True
+    playwright_timeout_ms: int = 20_000
 
     allowed_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
