@@ -76,33 +76,87 @@ class PlaywrightTwitterClient:
         async with self._lock:
             page = await self._ensure_page()
             await self._ensure_authenticated(page)
-            rows = await self._fetch_profile_rows(page, account)
+            await self._goto_profile(page, account)
+            rows = await self._extract_profile_rows(page)
 
-        tweets: list[TweetData] = []
-        seen_ids: set[str] = set()
-        for row in rows:
-            href = row.get("href") if isinstance(row, dict) else None
-            tweet_id = _extract_status_id(href or "")
-            if not tweet_id or tweet_id in seen_ids:
-                continue
+        tweets = _rows_to_tweets(rows)
+        return tweets[:limit]
 
-            seen_ids.add(tweet_id)
-            posted_at = _parse_x_datetime(row.get("datetime"))
-            text = (row.get("text") or "").strip()
-            absolute_url = href if isinstance(href, str) and href.startswith("http") else f"https://x.com{href}"
-            tweets.append(
-                TweetData(
-                    tweet_id=tweet_id,
-                    text=text,
-                    posted_at=posted_at,
-                    is_reply=bool(row.get("isReply")),
-                    is_retweet=bool(row.get("isRetweet")),
-                    url=absolute_url,
-                )
+    async def fetch_tweets_between(
+        self,
+        account: str,
+        start_at: datetime,
+        end_at: datetime,
+        max_tweets: int = 10_000,
+        max_scrolls: int = 2_000,
+        scroll_pause_ms: int = 1_000,
+    ) -> list[TweetData]:
+        """Backfill tweets within a datetime range by scrolling the timeline."""
+        if async_playwright is None:
+            raise RuntimeError("playwright is unavailable in this environment")
+
+        if max_tweets <= 0:
+            return []
+
+        start_at = _as_utc(start_at)
+        end_at = _as_utc(end_at)
+        if start_at > end_at:
+            raise ValueError("start_at must be <= end_at")
+
+        async with self._lock:
+            page = await self._ensure_page()
+            await self._ensure_authenticated(page)
+            await self._goto_profile(page, account)
+
+            collected: dict[str, TweetData] = {}
+            stagnant_cycles = 0
+
+            for _ in range(max_scrolls):
+                rows = await self._extract_profile_rows(page)
+                before_count = len(collected)
+                saw_older_than_start = False
+
+                for tweet in _rows_to_tweets(rows):
+                    posted_at_utc = _as_utc(tweet.posted_at)
+                    tweet.posted_at = posted_at_utc
+                    if posted_at_utc < start_at:
+                        saw_older_than_start = True
+                    if posted_at_utc < start_at or posted_at_utc > end_at:
+                        continue
+                    if tweet.tweet_id not in collected:
+                        collected[tweet.tweet_id] = tweet
+
+                added = len(collected) - before_count
+                if added == 0:
+                    stagnant_cycles += 1
+                else:
+                    stagnant_cycles = 0
+
+                if len(collected) >= max_tweets:
+                    break
+                if saw_older_than_start and stagnant_cycles >= 2:
+                    break
+                if stagnant_cycles >= 8:
+                    break
+
+                previous_height = await page.evaluate("document.body.scrollHeight")
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await page.wait_for_timeout(scroll_pause_ms)
+                current_height = await page.evaluate("document.body.scrollHeight")
+                if current_height <= previous_height and added == 0:
+                    stagnant_cycles += 1
+
+            self.logger.info(
+                "playwright_backfill_window_complete",
+                extra={
+                    "event_type": "backfill",
+                    "account": account,
+                    "count": len(collected),
+                    "start_at": start_at.isoformat(),
+                    "end_at": end_at.isoformat(),
+                },
             )
-            if len(tweets) >= limit:
-                break
-        return tweets
+            return sorted(collected.values(), key=lambda tweet: tweet.posted_at)
 
     async def close(self) -> None:
         async with self._lock:
@@ -212,11 +266,13 @@ class PlaywrightTwitterClient:
                 return
         raise RuntimeError("x_login_timeout_waiting_for_manual_auth")
 
-    async def _fetch_profile_rows(self, page: Page, account: str) -> list[dict]:
+    async def _goto_profile(self, page: Page, account: str) -> None:
         url = f"https://x.com/{account}"
+        await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        await page.wait_for_selector("article", timeout=self.timeout_ms)
+
+    async def _extract_profile_rows(self, page: Page) -> list[dict]:
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            await page.wait_for_selector("article", timeout=self.timeout_ms)
             rows = await page.eval_on_selector_all(
                 "article",
                 """(articles) => {
@@ -287,3 +343,37 @@ async def _is_login_required(page: Page) -> bool:
         return True
 
     return False
+
+
+def _rows_to_tweets(rows: list[dict]) -> list[TweetData]:
+    tweets: list[TweetData] = []
+    seen_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        href = row.get("href")
+        tweet_id = _extract_status_id(href or "")
+        if not tweet_id or tweet_id in seen_ids:
+            continue
+        seen_ids.add(tweet_id)
+
+        posted_at = _parse_x_datetime(row.get("datetime"))
+        text = (row.get("text") or "").strip()
+        absolute_url = href if isinstance(href, str) and href.startswith("http") else f"https://x.com{href}"
+        tweets.append(
+            TweetData(
+                tweet_id=tweet_id,
+                text=text,
+                posted_at=_as_utc(posted_at),
+                is_reply=bool(row.get("isReply")),
+                is_retweet=bool(row.get("isRetweet")),
+                url=absolute_url,
+            )
+        )
+    return tweets
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

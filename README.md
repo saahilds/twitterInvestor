@@ -113,6 +113,12 @@ tests/
    uv run pytest
    ```
 
+8. Optional one-time backfill for 2026 tweets:
+
+   ```bash
+   uv run python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
+   ```
+
 ---
 
 ### Flow B: Without `uv` (`venv` + `pip`)
@@ -154,6 +160,12 @@ tests/
 
    ```bash
    pytest
+   ```
+
+7. Optional one-time backfill for 2026 tweets:
+
+   ```bash
+   python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
    ```
 
 ---
@@ -199,6 +211,20 @@ Persistent auth-related env vars:
 - `PLAYWRIGHT_HEADLESS=false`: needed for manual login
 - `PLAYWRIGHT_REQUIRE_LOGIN=true`: waits for authenticated session on first run
 - `PLAYWRIGHT_LOGIN_TIMEOUT_SECONDS`: max wait for manual login completion
+
+### Backfilling historical tweets (2026)
+
+Use the backfill script to collect historical tweets from the timeline into SQLite:
+
+```bash
+uv run python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
+```
+
+Notes:
+
+- Script writes into the same `tweets` table and deduplicates by `tweet_id`.
+- Safe to re-run; existing rows are skipped.
+- Keep your Chrome session logged in if account/timeline requires auth.
 
 ## API Endpoints
 
