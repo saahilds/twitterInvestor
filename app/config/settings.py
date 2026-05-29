@@ -20,13 +20,14 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./trading_bot.db"
 
     target_account: str = "CKCapitalxx"
-    poll_interval_seconds: int = 7
+    poll_interval_seconds: int = 60
     fetch_limit: int = 20
     ignore_replies: bool = True
     ignore_retweets: bool = True
     twitter_backend: Literal["playwright", "mock"] = "playwright"
     playwright_headless: bool = False
-    playwright_timeout_ms: int = 20_000
+    playwright_timeout_ms: int = 45_000
+    playwright_profile_load_retries: int = 3
     playwright_user_data_dir: str = ".playwright/x-profile"
     playwright_channel: str = "chrome"
     playwright_cdp_url: str | None = None
@@ -81,13 +82,21 @@ class Settings(BaseSettings):
             return [str(ticker).upper() for ticker in value]
         raise ValueError("ALLOWED_TICKERS must be a comma-separated string or list")
 
+    @field_validator("playwright_cdp_url", mode="before")
+    @classmethod
+    def normalize_playwright_cdp_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
     @field_validator("poll_interval_seconds")
     @classmethod
     def validate_poll_interval(cls, value: int) -> int:
-        if value < 5:
-            return 5
-        if value > 10:
-            return 10
+        if value < 60:
+            return 60
+        if value > 3600:
+            return 3600
         return value
 
     @field_validator("max_trade_size_usd")

@@ -69,7 +69,8 @@ class PlaywrightTwitterClient:
 
     def __init__(
         self,
-        timeout_ms: int = 20_000,
+        timeout_ms: int = 45_000,
+        profile_load_retries: int = 3,
         headless: bool = False,
         user_data_dir: str = ".playwright/x-profile",
         channel: str = "chrome",
@@ -81,6 +82,7 @@ class PlaywrightTwitterClient:
         logger: logging.Logger | None = None,
     ) -> None:
         self.timeout_ms = timeout_ms
+        self.profile_load_retries = max(1, profile_load_retries)
         self.headless = headless
         self.user_data_dir = user_data_dir
         self.channel = channel
@@ -238,7 +240,13 @@ class PlaywrightTwitterClient:
         self._playwright = await async_playwright().start()
         if self.cdp_url:
             self._attached_via_cdp = True
-            self._browser = await self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            try:
+                self._browser = await self._playwright.chromium.connect_over_cdp(self.cdp_url)
+            except Exception as exc:
+                raise RuntimeError(
+                    "playwright_cdp_connection_failed: start Chrome with remote debugging "
+                    f"or clear PLAYWRIGHT_CDP_URL in .env (tried {self.cdp_url})"
+                ) from exc
             contexts = self._browser.contexts
             self._context = contexts[0] if contexts else await self._browser.new_context()
             self.logger.info(
@@ -324,17 +332,75 @@ class PlaywrightTwitterClient:
 
     async def _goto_profile(self, page: Page, account: str) -> None:
         url = f"https://x.com/{account}"
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-            await page.wait_for_selector("article", timeout=self.timeout_ms)
-            posts_tab = page.get_by_role("tab", name="Posts", exact=True)
-            if await posts_tab.count() > 0:
-                await posts_tab.first.click(timeout=5_000)
-                await page.wait_for_timeout(500)
-        except Exception as exc:
-            if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
-                raise RuntimeError("playwright_timeout_loading_x_profile") from exc
-            raise
+        last_error: Exception | None = None
+
+        for attempt in range(1, self.profile_load_retries + 1):
+            try:
+                if attempt == 1:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+                else:
+                    self.logger.warning(
+                        "x_profile_load_retry",
+                        extra={
+                            "event_type": "x_profile",
+                            "account": account,
+                            "attempt": attempt,
+                            "max_attempts": self.profile_load_retries,
+                        },
+                    )
+                    await page.reload(wait_until="domcontentloaded", timeout=self.timeout_ms)
+
+                await page.wait_for_timeout(1_500)
+
+                if await _x_timeline_error_visible(page):
+                    self.logger.warning(
+                        "x_timeline_error_detected",
+                        extra={
+                            "event_type": "x_profile",
+                            "account": account,
+                            "attempt": attempt,
+                            "url": page.url,
+                        },
+                    )
+                    if await _click_x_timeline_retry(page):
+                        await page.wait_for_timeout(2_500)
+                    elif attempt < self.profile_load_retries:
+                        continue
+
+                await self._ensure_posts_tab(page)
+                await page.wait_for_selector("article", timeout=self.timeout_ms)
+                return
+            except Exception as exc:
+                last_error = exc
+                if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
+                    self.logger.warning(
+                        "x_profile_articles_timeout",
+                        extra={
+                            "event_type": "x_profile",
+                            "account": account,
+                            "attempt": attempt,
+                            "url": page.url,
+                            "timeline_error": await _x_timeline_error_visible(page),
+                            "article_count": await page.locator("article").count(),
+                        },
+                    )
+                    if attempt < self.profile_load_retries:
+                        continue
+                    raise RuntimeError("playwright_timeout_loading_x_profile") from exc
+                raise
+
+        if last_error is not None:
+            if PlaywrightTimeoutError is not None and isinstance(last_error, PlaywrightTimeoutError):
+                raise RuntimeError("playwright_timeout_loading_x_profile") from last_error
+            raise last_error
+
+    async def _ensure_posts_tab(self, page: Page) -> None:
+        if await page.locator("article").count() > 0:
+            return
+        posts_tab = page.get_by_role("tab", name="Posts", exact=True)
+        if await posts_tab.count() > 0:
+            await posts_tab.first.click(timeout=5_000)
+            await page.wait_for_timeout(750)
 
     async def _extract_profile_rows(self, page: Page) -> list[dict]:
         try:
@@ -465,6 +531,30 @@ def _row_to_tweet(row: dict) -> TweetData | None:
         is_retweet=bool(row.get("isRetweet")),
         url=absolute_url,
     )
+
+
+def body_indicates_x_timeline_error(body_text: str) -> bool:
+    lowered = body_text.lower()
+    return "something went wrong" in lowered or "try reloading" in lowered
+
+
+async def _x_timeline_error_visible(page: Page) -> bool:
+    try:
+        body_text = await page.evaluate("() => document.body?.innerText || ''")
+    except Exception:
+        return False
+    if not isinstance(body_text, str):
+        return False
+    return body_indicates_x_timeline_error(body_text)
+
+
+async def _click_x_timeline_retry(page: Page) -> bool:
+    for pattern in (r"^Retry$", r"^Reload$", r"Try again"):
+        button = page.get_by_role("button", name=re.compile(pattern, re.IGNORECASE))
+        if await button.count() > 0:
+            await button.first.click(timeout=5_000)
+            return True
+    return False
 
 
 async def _is_login_required(page: Page) -> bool:

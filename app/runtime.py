@@ -14,6 +14,7 @@ def build_twitter_client(settings: Settings, logger: logging.Logger) -> TwitterC
 
     return PlaywrightTwitterClient(
         timeout_ms=settings.playwright_timeout_ms,
+        profile_load_retries=settings.playwright_profile_load_retries,
         headless=settings.playwright_headless,
         user_data_dir=settings.playwright_user_data_dir,
         channel=settings.playwright_channel,
