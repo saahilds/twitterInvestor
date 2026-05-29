@@ -42,6 +42,10 @@ risk_manager = RiskManager(
         default_trade_size_usd=settings.default_trade_size_usd,
         cooldown_seconds=settings.cooldown_seconds,
         duplicate_window_seconds=settings.duplicate_window_seconds,
+        trading_window_enabled=settings.trading_window_enabled,
+        us_symbols_only=settings.us_symbols_only,
+        max_trades_per_ticker_per_day=settings.max_trades_per_ticker_per_day,
+        daily_limit_counts_simulation=settings.daily_limit_counts_simulation,
     )
 )
 

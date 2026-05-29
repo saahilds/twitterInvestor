@@ -256,6 +256,54 @@ After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading
 - Trade size is normalized and capped by `MAX_TRADE_SIZE_USD`.
 - Tickers must be present in `ALLOWED_TICKERS`.
 
+### Live trading test checklist (market hours)
+
+1. Set in `.env`:
+
+   ```env
+   SIMULATION_MODE=false
+   ENABLE_LIVE_TRADING=true
+   BROKER_BACKEND=robinhood
+   ORDER_EXECUTION_MODE=limit_at_ask
+   DEFAULT_TRADE_SIZE_USD=1.0
+   MAX_TRADE_SIZE_USD=1.0
+   TRADING_WINDOW_ENABLED=true
+   US_SYMBOLS_ONLY=true
+   ROBINHOOD_USERNAME=...
+   ROBINHOOD_PASSWORD=...
+   # ROBINHOOD_MFA_SECRET=...  # if 2FA enabled
+   ```
+
+2. Restart the app after changing `.env` (settings load at startup).
+3. During regular hours (Mon–Fri 9:30–16:00 ET), verify:
+
+   ```bash
+   curl http://127.0.0.1:8000/health
+   ```
+
+   Expect `live_trading_enabled: true` and `within_market_hours: true`.
+
+4. Verify Robinhood login (any time — no order placed):
+
+   ```bash
+   uv run python -m app.cli.rh_login --list-accounts
+   uv run python -m app.cli.rh_login --verify-all-accounts
+   uv run python -m app.cli.rh_login
+   ```
+
+   `--verify-all-accounts` logs in once and prints buying power / equity for every linked account (individual and joint). Set `ROBINHOOD_ACCOUNT=individual` or `joint` (or paste an exact `account_number` from `--list-accounts`). Expect `"ok": true` and the selected account in the response.
+
+5. Pre-flight a single order during market hours (optional):
+
+   ```bash
+   uv run python -m app.cli.test_order --ticker SPY --amount 1.0
+   ```
+
+6. Start the bot and monitor `logs/bot.log`, `GET /trades`, `GET /signals`.
+7. Use `POST /pause` to stop new orders immediately.
+
+BUY signals place a **$1 GFD limit buy at the current ask**. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+
 ## Railway Deployment
 
 The repo includes a `Dockerfile` and `railway.json`.

@@ -57,8 +57,15 @@ class Settings(BaseSettings):
     simulation_mode: bool = True
     enable_live_trading: bool = False
     broker_backend: Literal["robinhood", "mock"] = "robinhood"
+    order_execution_mode: Literal["limit_at_ask", "fractional_market"] = "limit_at_ask"
+    trading_window_enabled: bool = True
+    us_symbols_only: bool = True
+    max_trades_per_ticker_per_day: int = 1
+    daily_limit_counts_simulation: bool = False
     robinhood_username: str | None = None
     robinhood_password: str | None = None
+    robinhood_mfa_secret: str | None = None
+    robinhood_account: str | None = None
 
     log_level: str = "INFO"
     log_file: str = "logs/bot.log"

@@ -160,10 +160,11 @@ class BotWorker:
                 )
                 db.commit()
 
+            event_type = "trade_executed" if order_result.simulation else "live_order_submitted"
             self.audit_logger.write(
                 "INFO",
-                "trade_executed",
-                "trade_executed",
+                event_type,
+                event_type,
                 {
                     "tweet_id": tweet.tweet_id,
                     "ticker": signal.ticker,
@@ -171,11 +172,14 @@ class BotWorker:
                     "amount_usd": trade_amount,
                     "status": order_result.status,
                     "simulation": order_result.simulation,
+                    "broker_order_id": order_result.order_id,
                 },
             )
 
     async def _execute_order(self, action: SignalAction, ticker: str, amount_usd: float):
         if action == SignalAction.BUY:
+            if self.settings.order_execution_mode == "limit_at_ask":
+                return await self.broker.buy_limit_at_ask(ticker=ticker, amount_usd=amount_usd)
             return await self.broker.buy_market(ticker=ticker, amount_usd=amount_usd)
         if action == SignalAction.SELL:
             return await self.broker.sell_market(ticker=ticker, amount_usd=amount_usd)

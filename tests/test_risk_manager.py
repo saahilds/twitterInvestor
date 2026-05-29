@@ -13,6 +13,7 @@ def test_risk_rejects_unapproved_ticker(db_session) -> None:
             default_trade_size_usd=1,
             cooldown_seconds=300,
             duplicate_window_seconds=300,
+            trading_window_enabled=False,
         )
     )
     signal = TradeSignal(
@@ -36,6 +37,7 @@ def test_risk_enforces_cooldown(db_session) -> None:
             default_trade_size_usd=1,
             cooldown_seconds=300,
             duplicate_window_seconds=300,
+            trading_window_enabled=False,
         )
     )
     db_session.add(

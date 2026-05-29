@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
 from app.models.db_models import ParsedSignal, Trade, Tweet
+from app.risk.market_hours import is_within_regular_market_hours
 from app.models.schemas import (
     HealthResponse,
     ParsedSignalRead,
@@ -32,6 +33,10 @@ def create_router(
             worker_running=snapshot.running,
             worker_paused=snapshot.paused,
             simulation_mode=settings.simulation_mode,
+            live_trading_enabled=settings.live_trading_enabled,
+            order_execution_mode=settings.order_execution_mode,
+            trading_window_enabled=settings.trading_window_enabled,
+            within_market_hours=is_within_regular_market_hours(),
             target_account=settings.target_account,
         )
 

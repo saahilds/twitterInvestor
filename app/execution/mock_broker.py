@@ -14,6 +14,9 @@ class MockBroker:
     async def sell_market(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
         return self._simulated_result("sell", ticker, amount_usd)
 
+    async def buy_limit_at_ask(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
+        return self._simulated_result("buy_limit_at_ask", ticker, amount_usd)
+
     @staticmethod
     def _simulated_result(side: str, ticker: str, amount_usd: float) -> BrokerOrderResult:
         return BrokerOrderResult(

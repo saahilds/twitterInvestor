@@ -92,6 +92,10 @@ class HealthResponse(BaseModel):
     worker_running: bool
     worker_paused: bool
     simulation_mode: bool
+    live_trading_enabled: bool
+    order_execution_mode: str
+    trading_window_enabled: bool
+    within_market_hours: bool
     target_account: str
 
 
