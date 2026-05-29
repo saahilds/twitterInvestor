@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     playwright_cdp_url: str | None = None
     playwright_require_login: bool = True
     playwright_login_timeout_seconds: int = 300
+    backfill_max_scrolls: int = 150
+    backfill_scroll_pause_ms: int = 1500
 
     allowed_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [

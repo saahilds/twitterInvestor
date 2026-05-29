@@ -212,19 +212,31 @@ Persistent auth-related env vars:
 - `PLAYWRIGHT_REQUIRE_LOGIN=true`: waits for authenticated session on first run
 - `PLAYWRIGHT_LOGIN_TIMEOUT_SECONDS`: max wait for manual login completion
 
-### Backfilling historical tweets (2026)
+### Historical tweet backfill
 
-Use the backfill script to collect historical tweets from the timeline into SQLite:
+The live worker only ingests tweets visible on the current profile page. Use one of these one-off backfill commands to load older tweets into `trading_bot.db` (same Playwright Chrome profile; deduplicates by `tweet_id`).
+
+**Full calendar year** (recommended for large 2026 backfills):
 
 ```bash
 uv run python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
 ```
 
-Notes:
+**Since a start date** (lighter scroll; uses ingestion service):
 
-- Script writes into the same `tweets` table and deduplicates by `tweet_id`.
-- Safe to re-run; existing rows are skipped.
-- Keep your Chrome session logged in if account/timeline requires auth.
+```bash
+uv run python -m app.cli.backfill --since 2026-01-01
+```
+
+CLI options for `app.cli.backfill`:
+
+- `--since`: include tweets posted on/after this date (default `2026-01-01`)
+- `--max-scrolls`: override `BACKFILL_MAX_SCROLLS` (default `150`)
+- `--scroll-pause-ms`: override `BACKFILL_SCROLL_PAUSE_MS` (default `1500`)
+
+Replies/retweets follow `IGNORE_REPLIES` / `IGNORE_RETWEETS` unless overridden on the year script flags.
+
+After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading_bot.db`.
 
 ## API Endpoints
 

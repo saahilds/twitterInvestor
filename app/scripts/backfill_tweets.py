@@ -60,6 +60,8 @@ async def run_backfill(args: argparse.Namespace) -> None:
         cdp_url=settings.playwright_cdp_url,
         require_login=settings.playwright_require_login,
         login_timeout_seconds=settings.playwright_login_timeout_seconds,
+        backfill_max_scrolls=settings.backfill_max_scrolls,
+        backfill_scroll_pause_ms=settings.backfill_scroll_pause_ms,
         logger=logger,
     )
 

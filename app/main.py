@@ -11,47 +11,22 @@ from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.execution.mock_broker import MockBroker
 from app.execution.robinhood_broker import RobinhoodBroker
-from app.ingestion.clients import (
-    MockTwitterClient,
-    PlaywrightTwitterClient,
-    TwitterClient,
-)
-from app.ingestion.service import TweetIngestionService
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.risk.risk_manager import RiskConfig, RiskManager
+from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 from app.services.audit import ExecutionAuditLogger
 from app.services.worker import BotWorker
-from app.utils.logging import configure_logging
 
 settings = get_settings()
-logger = configure_logging(settings)
+logger = build_logger(settings)
 
 init_db()
 
-def build_twitter_client() -> TwitterClient:
-    if settings.twitter_backend == "mock":
-        return MockTwitterClient()
-
-    return PlaywrightTwitterClient(
-        timeout_ms=settings.playwright_timeout_ms,
-        headless=settings.playwright_headless,
-        user_data_dir=settings.playwright_user_data_dir,
-        channel=settings.playwright_channel,
-        cdp_url=settings.playwright_cdp_url,
-        require_login=settings.playwright_require_login,
-        login_timeout_seconds=settings.playwright_login_timeout_seconds,
-        logger=logger,
-    )
-
-
-twitter_client = build_twitter_client()
-ingestion_service = TweetIngestionService(
+twitter_client = build_twitter_client(settings, logger)
+ingestion_service = build_ingestion_service(
+    settings=settings,
     twitter_client=twitter_client,
     session_factory=SessionLocal,
-    target_account=settings.target_account,
-    fetch_limit=settings.fetch_limit,
-    ignore_replies=settings.ignore_replies,
-    ignore_retweets=settings.ignore_retweets,
     logger=logger,
 )
 

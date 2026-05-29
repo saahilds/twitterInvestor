@@ -1,9 +1,23 @@
 __pycache__/
 *.pyc
+*.pyo
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .venv/
 .env
+.env.*
+!.env.example
+
+# Local runtime data
 trading_bot.db
+trading_bot.db-*
 logs/
+.playwright/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

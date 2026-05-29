@@ -8,4 +8,6 @@ __pycache__
 .ruff_cache
 tests
 trading_bot.db
+trading_bot.db-*
 logs
+.playwright
