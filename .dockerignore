@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.env
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+trading_bot.db
+trading_bot.db-*
+logs
+.playwright
