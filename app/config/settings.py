@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     target_account: str = "CKCapitalxx"
     poll_interval_seconds: int = 60
+    dashboard_positions_refresh_seconds: int = 300
     fetch_limit: int = 20
     ignore_replies: bool = True
     ignore_retweets: bool = True
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     )
     default_trade_size_usd: float = 1.0
     max_trade_size_usd: float = 5.0
+    new_ticker_size_multiplier: float = 10.0
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
@@ -72,6 +74,9 @@ class Settings(BaseSettings):
     log_file: str = "logs/bot.log"
     log_max_bytes: int = 2_000_000
     log_backup_count: int = 5
+
+    pnl_include_simulation: bool = True
+    pnl_quote_cache_seconds: int = 60
 
     @field_validator("allowed_tickers", mode="before")
     @classmethod

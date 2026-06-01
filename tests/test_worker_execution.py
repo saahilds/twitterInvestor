@@ -40,3 +40,28 @@ async def test_worker_buy_uses_limit_at_ask() -> None:
     await worker._execute_order(SignalAction.BUY, "NVDA", 1.0)
     broker.buy_limit_at_ask.assert_awaited_once_with(ticker="NVDA", amount_usd=1.0)
     broker.buy_market.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_live_sell() -> None:
+    settings = Settings(
+        simulation_mode=False,
+        enable_live_trading=True,
+    )
+    broker = MagicMock()
+    broker.sell_market = AsyncMock()
+
+    worker = BotWorker(
+        settings=settings,
+        ingestion_service=MagicMock(),
+        parser=MagicMock(),
+        risk_manager=MagicMock(),
+        broker=broker,
+        session_factory=MagicMock(),
+        audit_logger=MagicMock(),
+        logger=logging.getLogger("test"),
+    )
+
+    with pytest.raises(ValueError, match="live_sell_blocked"):
+        await worker._execute_order(SignalAction.SELL, "NVDA", 1.0)
+    broker.sell_market.assert_not_called()

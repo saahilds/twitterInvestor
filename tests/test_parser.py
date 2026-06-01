@@ -20,9 +20,41 @@ def test_parser_detects_sell_signal() -> None:
     assert signal.ticker == "META"
 
 
-def test_parser_ignores_unknown_ticker() -> None:
+def test_parser_parses_cashtag_not_on_allowlist_for_risk_layer() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["AAPL"])
+    signal = parser.parse("adding $XYZ", source_tweet_id="3")
+
+    assert signal.action == SignalAction.BUY
+    assert signal.ticker == "XYZ"
+
+
+def test_parser_ignores_bare_symbol_not_on_allowlist() -> None:
     parser = RuleBasedSignalParser(known_tickers=["AAPL"])
     signal = parser.parse("adding XYZ", source_tweet_id="3")
 
     assert signal.action == SignalAction.IGNORE
     assert signal.ticker is None
+
+
+AAOI_TWEET = """My pick for the full port challenge is...
+
+Just took the position.
+
+
+$AAOI
+
+
+Here is the setup.
+
+
+$AAOI
+ is sitting roughly 30% off its all time highs and the reason is dilution overhang. Every time this company raises capital the stock sells off as the market digests new shares."""
+
+
+def test_parser_took_position_is_buy_not_sells_off_false_positive() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"], default_trade_size_usd=1.0)
+    signal = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")
+
+    assert signal.action == SignalAction.BUY
+    assert signal.ticker == "AAOI"
+    assert signal.score >= 4

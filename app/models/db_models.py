@@ -35,6 +35,14 @@ class Tweet(Base):
     parsed_signals: Mapped[list["ParsedSignal"]] = relationship(back_populates="tweet")
 
 
+class RecognizedTicker(Base):
+    __tablename__ = "recognized_tickers"
+
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class ParsedSignal(Base):
     __tablename__ = "parsed_signals"
 
@@ -60,17 +68,36 @@ class Trade(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     parsed_signal_id: Mapped[int] = mapped_column(ForeignKey("parsed_signals.id"), index=True)
+    source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     ticker: Mapped[str] = mapped_column(String(16), index=True)
     action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
     amount_usd: Mapped[float] = mapped_column(Float)
     quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
     simulation: Mapped[bool] = mapped_column(Boolean, default=True)
-    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    order_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    ask_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     parsed_signal: Mapped[ParsedSignal] = relationship(back_populates="trades")
+
+
+class AccountSnapshot(Base):
+    __tablename__ = "account_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_number: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    stocks_plus_cash: Mapped[float] = mapped_column(Float)
+    holdings_market_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cash: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
 class ExecutionLog(Base):

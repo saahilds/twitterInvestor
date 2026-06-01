@@ -11,7 +11,8 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 - Supports persistent Chrome profile so login session is reused
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
-- Basic risk controls: allowlist, max trade size, cooldown, duplicate prevention
+- Basic risk controls: recognized ticker registry (auto-grows), max trade size, cooldown, duplicate prevention
+- First-time US ticker buys size up to 10× default (capped by available cash, not margin)
 - Broker interface with Robinhood + mock implementations
 - Structured logging to console and rotating file logs
 - FastAPI endpoints for health, tweets, signals, trades, pause/resume
@@ -176,7 +177,7 @@ When a **new tweet** is detected, you will now see a log event like:
 
 ```json
 {
-  "message": "new_tweet_detected",
+  "message": "tweet_ingested",
   "event_type": "tweet_ingested",
   "context": {
     "tweet_id": "1234567890",
@@ -191,10 +192,10 @@ Tips for market session monitoring:
 
 - Keep `LOG_LEVEL=INFO` in `.env`
 - Run the server in a dedicated terminal and leave it open during market hours
-- Watch for:
-  - `new_tweet_detected` (new tweet arrived)
-  - `signal_rejected` (blocked by risk rules)
-  - `trade_executed` (simulation or live execution result)
+- At INFO level you will see:
+  - `tweet_ingested` (new tweet stored)
+  - `trade_executed` or `live_order_submitted` (order placed; failed orders are not logged)
+- Rejected signals are still saved in the DB (`parsed_signals.rejection_reason`) but not logged
 
 ### Twitter Backend Modes
 
@@ -238,12 +239,41 @@ Replies/retweets follow `IGNORE_REPLIES` / `IGNORE_RETWEETS` unless overridden o
 
 After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading_bot.db`.
 
+### P&L by ticker
+
+Trades in SQLite are the source of truth. A separate P&L layer aggregates positions (average cost) and marks open holdings to **live Robinhood quotes** (cached ~60s):
+
+```bash
+uv run python -m app.cli.pnl
+uv run python -m app.cli.pnl --live-only
+uv run python -m app.cli.pnl --json
+```
+
+With the API running, open **`http://127.0.0.1:8000/dashboard`** for a live UI (auto-refreshes every 15s):
+
+- Bot status (running, market hours, live vs simulation)
+- **Robinhood holdings** (live positions from your account, includes manual trades)
+- Bot-tracked P&amp;L by ticker from DB trades with live quotes
+- Recent tweets ingested and recent trades
+- Pause / resume controls
+
+JSON API: `GET /dashboard/data` or `GET /portfolio/pnl`.
+
+- **Realized P&L**: from SELL trades vs average cost of shares held.
+- **Unrealized P&L**: open shares × (last price − avg cost).
+- Use `--live-only` / `?live_only=true` to exclude simulated trades.
+
 ## API Endpoints
 
 - `GET /health`
 - `GET /tweets?limit=50`
 - `GET /signals?limit=50`
-- `GET /trades?limit=50`
+- `GET /portfolio/pnl` — realized + unrealized P&L by ticker (live Robinhood quotes, ~60s cache)
+- `GET /dashboard` — live UI (status, P&amp;L, tweets, trades; refreshes every 15s)
+- `GET /dashboard/data` — JSON snapshot for the dashboard
+- `GET /trades?limit=50` — execution status, limit/fill price, quantity, broker order id, errors
+- `GET /trades/{trade_id}`
+- `POST /trades/{trade_id}/refresh` — pull latest Robinhood order state (filled/cancelled/open)
 - `POST /pause`
 - `POST /resume`
 
@@ -302,7 +332,7 @@ After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading
 6. Start the bot and monitor `logs/bot.log`, `GET /trades`, `GET /signals`.
 7. Use `POST /pause` to stop new orders immediately.
 
-BUY signals place a **$1 GFD limit buy at the current ask**. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+BUY signals place a **$1 GFD limit buy at the current ask**. **Live mode is BUY-only** — SELL signals are logged and rejected (`live_sell_blocked`). Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
 
 ## Railway Deployment
 

@@ -9,35 +9,53 @@ from sqlalchemy.orm import Session
 from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import RiskCheckResult, TradeSignal
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
+from app.services.recognized_tickers import RecognizedTickerRegistry
 
 
 @dataclass(slots=True)
 class RiskConfig:
-    allowlist: set[str]
+    seed_tickers: set[str]
     max_trade_size_usd: float
     default_trade_size_usd: float
+    new_ticker_size_multiplier: float
     cooldown_seconds: int
     duplicate_window_seconds: int
     trading_window_enabled: bool = True
     us_symbols_only: bool = True
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False
+    live_trading_enabled: bool = False
 
 
 class RiskManager:
     """Minimal risk checks for Phase 1 safety."""
 
-    def __init__(self, config: RiskConfig) -> None:
+    def __init__(
+        self,
+        config: RiskConfig,
+        registry: RecognizedTickerRegistry | None = None,
+    ) -> None:
         self.config = config
+        self.registry = registry or RecognizedTickerRegistry()
 
-    def evaluate(self, signal: TradeSignal, db: Session) -> RiskCheckResult:
+    def evaluate(
+        self,
+        signal: TradeSignal,
+        db: Session,
+        *,
+        cash_available_usd: float | None = None,
+    ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
+
+        if self.config.live_trading_enabled and signal.action == SignalAction.SELL:
+            return RiskCheckResult(allowed=False, reason="live_sell_blocked")
 
         if not signal.ticker:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
 
         ticker = signal.ticker.upper()
+        recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(ticker, db)
 
         if self.config.us_symbols_only and not _is_us_symbol(ticker):
             return RiskCheckResult(allowed=False, reason=f"non_us_symbol:{ticker}")
@@ -45,15 +63,13 @@ class RiskManager:
         if self.config.trading_window_enabled and not is_within_regular_market_hours():
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
 
-        if ticker not in self.config.allowlist:
-            return RiskCheckResult(allowed=False, reason=f"ticker_not_allowed:{ticker}")
+        if not recognized and signal.action == SignalAction.SELL:
+            return RiskCheckResult(allowed=False, reason=f"unrecognized_ticker_sell:{ticker}")
 
-        normalized_trade = max(
-            0.0,
-            min(
-                signal.suggested_trade_usd or self.config.default_trade_size_usd,
-                self.config.max_trade_size_usd,
-            ),
+        normalized_trade, is_new_ticker = self._resolve_trade_size(
+            signal=signal,
+            recognized=recognized,
+            cash_available_usd=cash_available_usd,
         )
         if normalized_trade <= 0:
             return RiskCheckResult(allowed=False, reason="invalid_trade_size")
@@ -92,11 +108,36 @@ class RiskManager:
         if duplicate_signal is not None:
             return RiskCheckResult(allowed=False, reason=f"duplicate_signal:{ticker}:{signal.action.value}")
 
+        reason = "new_ticker_sized_up" if is_new_ticker else "ok"
         return RiskCheckResult(
             allowed=True,
-            reason="ok",
+            reason=reason,
             normalized_trade_usd=round(normalized_trade, 2),
+            is_new_ticker=is_new_ticker,
         )
+
+    def _resolve_trade_size(
+        self,
+        *,
+        signal: TradeSignal,
+        recognized: bool,
+        cash_available_usd: float | None,
+    ) -> tuple[float, bool]:
+        if signal.action != SignalAction.BUY:
+            size = min(
+                signal.suggested_trade_usd or self.config.default_trade_size_usd,
+                self.config.max_trade_size_usd,
+            )
+            return max(0.0, size), False
+
+        if recognized:
+            size = min(self.config.default_trade_size_usd, self.config.max_trade_size_usd)
+            return max(0.0, size), False
+
+        target = self.config.default_trade_size_usd * self.config.new_ticker_size_multiplier
+        if cash_available_usd is not None:
+            target = min(target, cash_available_usd)
+        return max(0.0, target), True
 
     def _tweet_already_traded(self, source_tweet_id: str, db: Session) -> bool:
         existing = db.execute(

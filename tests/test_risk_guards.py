@@ -7,9 +7,10 @@ from app.risk.risk_manager import RiskConfig, RiskManager
 
 def _manager(**overrides) -> RiskManager:
     defaults = {
-        "allowlist": {"NVDA", "AAPL"},
+        "seed_tickers": {"NVDA", "AAPL"},
         "max_trade_size_usd": 5,
         "default_trade_size_usd": 1,
+        "new_ticker_size_multiplier": 10,
         "cooldown_seconds": 300,
         "duplicate_window_seconds": 300,
         "trading_window_enabled": False,
@@ -19,6 +20,33 @@ def _manager(**overrides) -> RiskManager:
     }
     defaults.update(overrides)
     return RiskManager(RiskConfig(**defaults))
+
+
+def test_risk_rejects_live_sell(db_session) -> None:
+    manager = _manager(live_trading_enabled=True)
+    signal = TradeSignal(
+        source_tweet_id="t-sell",
+        ticker="NVDA",
+        action=SignalAction.SELL,
+        raw_text="selling NVDA",
+        suggested_trade_usd=1,
+    )
+    result = manager.evaluate(signal, db_session)
+    assert not result.allowed
+    assert result.reason == "live_sell_blocked"
+
+
+def test_risk_allows_simulated_sell_when_not_live(db_session) -> None:
+    manager = _manager(live_trading_enabled=False)
+    signal = TradeSignal(
+        source_tweet_id="t-sell-sim",
+        ticker="NVDA",
+        action=SignalAction.SELL,
+        raw_text="selling NVDA",
+        suggested_trade_usd=1,
+    )
+    result = manager.evaluate(signal, db_session)
+    assert result.allowed
 
 
 def test_risk_rejects_non_us_symbol(db_session) -> None:

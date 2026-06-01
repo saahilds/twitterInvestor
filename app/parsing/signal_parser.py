@@ -13,16 +13,20 @@ class RuleBasedSignalParser:
     def __init__(self, known_tickers: Iterable[str], default_trade_size_usd: float = 1.0) -> None:
         self.known_tickers = {ticker.upper() for ticker in known_tickers}
         self.default_trade_size_usd = default_trade_size_usd
-        self.ticker_pattern = re.compile(r"(?:\$)?([A-Z]{1,5})\b")
+        self.cashtag_pattern = re.compile(r"\$([A-Za-z]{1,5})\b")
+        self.bare_ticker_pattern = re.compile(r"\b([A-Z]{1,5})\b")
 
         self.buy_keywords: dict[str, int] = {
+            "took the position": 4,
+            "took a position": 4,
+            "took position": 4,
             "adding": 3,
-            "add": 2,
             "starter": 3,
             "buy": 3,
             "bought": 3,
             "long": 2,
             "scale in": 2,
+            "add": 2,
         }
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
@@ -35,13 +39,22 @@ class RuleBasedSignalParser:
             "reduce": 2,
         }
 
-    def parse(self, text: str, source_tweet_id: str) -> TradeSignal:
+    def parse(
+        self,
+        text: str,
+        source_tweet_id: str,
+        *,
+        extra_known_tickers: Iterable[str] | None = None,
+    ) -> TradeSignal:
         """Parse a tweet into a basic trade signal."""
         raw_text = text.strip()
         upper_text = raw_text.upper()
         normalized = raw_text.lower()
+        known_tickers = self.known_tickers
+        if extra_known_tickers:
+            known_tickers = self.known_tickers | {ticker.upper() for ticker in extra_known_tickers}
 
-        ticker = self._extract_ticker(upper_text)
+        ticker = self._extract_ticker(raw_text, upper_text, known_tickers)
         if ticker is None:
             return self._ignore_signal(raw_text, source_tweet_id, reason_score=0)
 
@@ -66,19 +79,30 @@ class RuleBasedSignalParser:
             suggested_trade_usd=self.default_trade_size_usd,
         )
 
-    def _extract_ticker(self, upper_text: str) -> str | None:
-        seen: list[str] = []
-        for match in self.ticker_pattern.finditer(upper_text):
+    def _extract_ticker(self, raw_text: str, upper_text: str, known_tickers: set[str]) -> str | None:
+        cashtags: list[str] = []
+        for match in self.cashtag_pattern.finditer(raw_text):
             candidate = match.group(1).upper()
-            if candidate in self.known_tickers and candidate not in seen:
-                seen.append(candidate)
-        return seen[0] if seen else None
+            if candidate not in cashtags:
+                cashtags.append(candidate)
+        if cashtags:
+            for candidate in cashtags:
+                if candidate in known_tickers:
+                    return candidate
+            return cashtags[0]
+
+        for match in self.bare_ticker_pattern.finditer(upper_text):
+            candidate = match.group(1).upper()
+            if candidate in known_tickers:
+                return candidate
+        return None
 
     @staticmethod
     def _score(text: str, keywords: dict[str, int]) -> int:
         score = 0
-        for phrase, weight in keywords.items():
-            if phrase in text:
+        for phrase, weight in sorted(keywords.items(), key=lambda item: len(item[0]), reverse=True):
+            pattern = r"\b" + re.escape(phrase) + r"\b"
+            if re.search(pattern, text):
                 score += weight
         return score
 
