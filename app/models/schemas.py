@@ -115,6 +115,9 @@ class HealthResponse(BaseModel):
     poll_interval_seconds: int = 60
     dashboard_positions_refresh_seconds: int = 300
     default_trade_size_usd: float = 1.0
+    robinhood_logged_in: bool | None = None
+    robinhood_auth_error: str | None = None
+    robinhood_auth_retry_in_seconds: int | None = None
 
 
 class DashboardTweetRead(TweetRead):

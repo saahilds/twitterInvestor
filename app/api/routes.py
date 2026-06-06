@@ -65,6 +65,14 @@ def create_router(
     @router.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
         snapshot = worker.snapshot()
+        rh_logged_in = None
+        rh_error = None
+        rh_retry = None
+        if isinstance(broker, RobinhoodBroker):
+            session = broker.session_snapshot()
+            rh_logged_in = session.logged_in
+            rh_error = session.last_error
+            rh_retry = session.retry_in_seconds if session.last_error else None
         return HealthResponse(
             worker_running=snapshot.running,
             worker_paused=snapshot.paused,
@@ -77,6 +85,9 @@ def create_router(
             poll_interval_seconds=settings.poll_interval_seconds,
             dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
             default_trade_size_usd=settings.default_trade_size_usd,
+            robinhood_logged_in=rh_logged_in,
+            robinhood_auth_error=rh_error,
+            robinhood_auth_retry_in_seconds=rh_retry,
         )
 
     @router.get("/tweets", response_model=list[TweetRead])
@@ -155,8 +166,7 @@ def create_router(
                 error="broker_not_robinhood",
             )
 
-        holdings, holdings_error = await asyncio.to_thread(broker.get_holdings)
-        metrics = await asyncio.to_thread(broker.get_portfolio_metrics)
+        holdings, metrics, holdings_error = await asyncio.to_thread(broker.get_broker_snapshot)
         if holdings_error:
             return BrokerHoldingsSnapshot(
                 available=False,

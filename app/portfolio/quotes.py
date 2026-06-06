@@ -4,27 +4,27 @@ import logging
 import time
 from typing import Callable
 
-from app.config.settings import Settings
+from app.execution.robinhood_session import RobinhoodSessionManager
 
 try:
     from robin_stocks import robinhood as rh
 except Exception:  # pragma: no cover
     rh = None
 
-try:
-    import pyotp
-except Exception:  # pragma: no cover
-    pyotp = None
-
 
 class QuoteProvider:
     """Fetch latest prices (slightly delayed) for P&L marks."""
 
-    def __init__(self, settings: Settings, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        logger: logging.Logger,
+        session_manager: RobinhoodSessionManager | None = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger
+        self._session = session_manager or RobinhoodSessionManager(settings=settings, logger=logger)
         self._cache: dict[str, tuple[float, float]] = {}
-        self._logged_in = False
 
     def get_prices(self, tickers: list[str], *, cache_seconds: int = 60) -> dict[str, float | None]:
         symbols = sorted({symbol.upper() for symbol in tickers if symbol})
@@ -64,25 +64,7 @@ class QuoteProvider:
         return result
 
     def _ensure_login(self) -> bool:
-        if self._logged_in:
-            return True
-        username = self.settings.robinhood_username
-        password = self.settings.robinhood_password
-        if not username or not password:
-            return False
-
-        mfa_code = None
-        if self.settings.robinhood_mfa_secret and pyotp is not None:
-            mfa_code = pyotp.TOTP(self.settings.robinhood_mfa_secret).now()
-
-        logged_in = rh.login(
-            username=username,
-            password=password,
-            mfa_code=mfa_code,
-            expiresIn=86400,
-        )
-        self._logged_in = bool(logged_in)
-        return self._logged_in
+        return self._session.ensure_session() is None
 
     @staticmethod
     def _fetch_single(ticker: str) -> float | None:

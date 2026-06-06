@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     robinhood_password: str | None = None
     robinhood_mfa_secret: str | None = None
     robinhood_account: str | None = None
+    robinhood_login_retry_seconds: int = 300
+    robinhood_login_429_backoff_seconds: int = 900
+    robinhood_session_validate_seconds: int = 120
 
     log_level: str = "INFO"
     log_file: str = "logs/bot.log"

@@ -11,6 +11,7 @@ from app.db.init_db import init_db
 from app.db.session import SessionLocal
 from app.execution.mock_broker import MockBroker
 from app.execution.robinhood_broker import RobinhoodBroker
+from app.execution.robinhood_session import RobinhoodSessionManager
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.risk.risk_manager import RiskConfig, RiskManager
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
@@ -54,10 +55,19 @@ risk_manager = RiskManager(
     )
 )
 
-broker = MockBroker() if settings.broker_backend == "mock" else RobinhoodBroker(settings=settings, logger=logger)
+rh_session: RobinhoodSessionManager | None = None
+if settings.broker_backend == "mock":
+    broker = MockBroker()
+else:
+    rh_session = RobinhoodSessionManager(settings=settings, logger=logger)
+    broker = RobinhoodBroker(settings=settings, logger=logger, session_manager=rh_session)
 audit_logger = ExecutionAuditLogger(session_factory=SessionLocal, logger=logger)
 trade_status_sync = TradeStatusSync(broker=broker, logger=logger) if isinstance(broker, RobinhoodBroker) else None
-quote_provider = QuoteProvider(settings=settings, logger=logger)
+quote_provider = QuoteProvider(
+    settings=settings,
+    logger=logger,
+    session_manager=rh_session,
+)
 pnl_service = PnlService(
     session_factory=SessionLocal,
     quote_provider=quote_provider,

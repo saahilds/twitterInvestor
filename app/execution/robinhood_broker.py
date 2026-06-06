@@ -19,6 +19,7 @@ from app.execution.holdings import (
     fetch_robinhood_holdings,
 )
 from app.execution.order_details import enrich_broker_order_result
+from app.execution.robinhood_session import RobinhoodSessionManager
 from app.models.schemas import BrokerOrderResult
 
 try:
@@ -26,19 +27,19 @@ try:
 except Exception:  # pragma: no cover - environment-specific
     rh = None
 
-try:
-    import pyotp
-except Exception:  # pragma: no cover - environment-specific
-    pyotp = None
-
 
 class RobinhoodBroker:
     """Robinhood order execution with explicit live-trading guardrails."""
 
-    def __init__(self, settings: Settings, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        logger: logging.Logger,
+        session_manager: RobinhoodSessionManager | None = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger
-        self._logged_in = False
+        self._session = session_manager or RobinhoodSessionManager(settings=settings, logger=logger)
         self._account_number: str | None = None
 
     async def buy_market(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
@@ -121,12 +122,25 @@ class RobinhoodBroker:
     def fetch_order_info(self, order_id: str) -> dict | None:
         if rh is None or not order_id:
             return None
-        if not self._login():
+        if self._ensure_live_session() is not None:
             return None
         info = rh.orders.get_stock_order_info(order_id)
         if isinstance(info, list) and info:
             info = info[0]
         return info if isinstance(info, dict) else None
+
+    def get_broker_snapshot(self) -> tuple[list[BrokerHolding], BrokerPortfolioMetrics, str | None]:
+        """Fetch holdings and portfolio metrics with a single auth check."""
+        if rh is None:
+            empty = BrokerPortfolioMetrics(None, None, None, None, None)
+            return [], empty, "robin_stocks_unavailable"
+        login_error = self._ensure_live_session()
+        if login_error:
+            empty = BrokerPortfolioMetrics(None, None, None, None, None)
+            return [], empty, login_error
+        holdings = fetch_robinhood_holdings(self._account_number)[0]
+        metrics = fetch_portfolio_metrics(self._account_number)
+        return holdings, metrics, None
 
     def get_cash_available_usd(self) -> float | None:
         if rh is None:
@@ -211,9 +225,9 @@ class RobinhoodBroker:
         if not self.settings.robinhood_username or not self.settings.robinhood_password:
             return {"ok": False, "error": "missing_robinhood_credentials"}
 
-        login_ok = await asyncio.to_thread(self._login)
-        if not login_ok:
-            return {"ok": False, "error": "robinhood_login_failed"}
+        login_ok = await asyncio.to_thread(self._session.ensure_session, force=True)
+        if login_ok is not None:
+            return {"ok": False, "error": login_ok}
 
         try:
             profile = await asyncio.to_thread(self._load_login_profile)
@@ -225,7 +239,7 @@ class RobinhoodBroker:
     def list_accounts(self) -> list[dict]:
         if rh is None:
             return []
-        if not self._logged_in and not self._login():
+        if self._ensure_live_session() is not None:
             return []
         return [summarize_account(account) for account in load_all_accounts()]
 
@@ -237,9 +251,9 @@ class RobinhoodBroker:
         if not self.settings.robinhood_username or not self.settings.robinhood_password:
             return {"ok": False, "error": "missing_robinhood_credentials"}
 
-        login_ok = await asyncio.to_thread(self._login)
-        if not login_ok:
-            return {"ok": False, "error": "robinhood_login_failed"}
+        login_ok = await asyncio.to_thread(self._session.ensure_session, force=True)
+        if login_ok is not None:
+            return {"ok": False, "error": login_ok}
 
         try:
             user = await asyncio.to_thread(rh.profiles.load_user_profile)
@@ -286,8 +300,9 @@ class RobinhoodBroker:
         }
 
     def _ensure_live_session(self) -> str | None:
-        if not self._login():
-            return "robinhood_login_failed"
+        login_error = self._session.ensure_session()
+        if login_error:
+            return login_error
         try:
             self._account_number = resolve_account_number(
                 self.settings.robinhood_account,
@@ -297,28 +312,8 @@ class RobinhoodBroker:
             return str(exc)
         return None
 
-    def _login(self) -> bool:
-        username = self.settings.robinhood_username
-        password = self.settings.robinhood_password
-        if not username or not password:
-            self.logger.error("missing_robinhood_credentials")
-            return False
-
-        mfa_code = None
-        if self.settings.robinhood_mfa_secret:
-            if pyotp is None:
-                self.logger.error("pyotp_unavailable_for_mfa")
-                return False
-            mfa_code = pyotp.TOTP(self.settings.robinhood_mfa_secret).now()
-
-        result = rh.login(
-            username=username,
-            password=password,
-            mfa_code=mfa_code,
-            expiresIn=86400,
-        )
-        self._logged_in = bool(result)
-        return self._logged_in
+    def session_snapshot(self):
+        return self._session.snapshot()
 
     def _submit_limit_buy_at_ask(self, ticker: str, amount_usd: float) -> dict:
         symbol = ticker.upper()
