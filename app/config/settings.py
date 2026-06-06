@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
+    signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
+    signal_ml_min_confidence: float = 0.42
+    signal_ml_min_margin: float = 0.08
+
     simulation_mode: bool = True
     enable_live_trading: bool = False
     broker_backend: Literal["robinhood", "mock"] = "robinhood"

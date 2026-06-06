@@ -12,7 +12,7 @@ from app.db.session import SessionLocal
 from app.execution.mock_broker import MockBroker
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.execution.robinhood_session import RobinhoodSessionManager
-from app.parsing.signal_parser import RuleBasedSignalParser
+from app.parsing.factory import build_signal_parser
 from app.risk.risk_manager import RiskConfig, RiskManager
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 from app.services.audit import ExecutionAuditLogger
@@ -34,10 +34,7 @@ ingestion_service = build_ingestion_service(
     logger=logger,
 )
 
-parser = RuleBasedSignalParser(
-    known_tickers=settings.allowed_tickers,
-    default_trade_size_usd=settings.default_trade_size_usd,
-)
+parser = build_signal_parser(settings)
 
 risk_manager = RiskManager(
     RiskConfig(

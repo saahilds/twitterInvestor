@@ -5,12 +5,17 @@ from collections.abc import Iterable
 
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
+from app.parsing.text_normalize import extract_action_snippet
 
 
 class RuleBasedSignalParser:
     """Keyword and regex parser tuned for repetitive tweet signals."""
 
-    def __init__(self, known_tickers: Iterable[str], default_trade_size_usd: float = 1.0) -> None:
+    def __init__(
+        self,
+        known_tickers: Iterable[str],
+        default_trade_size_usd: float = 1.0,
+    ) -> None:
         self.known_tickers = {ticker.upper() for ticker in known_tickers}
         self.default_trade_size_usd = default_trade_size_usd
         self.cashtag_pattern = re.compile(r"\$([A-Za-z]{1,5})\b")
@@ -80,22 +85,33 @@ class RuleBasedSignalParser:
         )
 
     def _extract_ticker(self, raw_text: str, upper_text: str, known_tickers: set[str]) -> str | None:
-        cashtags: list[str] = []
-        for match in self.cashtag_pattern.finditer(raw_text):
-            candidate = match.group(1).upper()
-            if candidate not in cashtags:
-                cashtags.append(candidate)
+        """Pick the trade ticker from the action lead-in, not allowlisted symbols in thesis text."""
+        action_snippet = extract_action_snippet(raw_text)
+        action_upper = action_snippet.upper()
+
+        cashtags = self._collect_cashtags(action_snippet)
+        if not cashtags:
+            cashtags = self._collect_cashtags(raw_text)
         if cashtags:
-            for candidate in cashtags:
-                if candidate in known_tickers:
-                    return candidate
             return cashtags[0]
 
+        for match in self.bare_ticker_pattern.finditer(action_upper):
+            candidate = match.group(1).upper()
+            if candidate in known_tickers:
+                return candidate
         for match in self.bare_ticker_pattern.finditer(upper_text):
             candidate = match.group(1).upper()
             if candidate in known_tickers:
                 return candidate
         return None
+
+    def _collect_cashtags(self, text: str) -> list[str]:
+        cashtags: list[str] = []
+        for match in self.cashtag_pattern.finditer(text):
+            candidate = match.group(1).upper()
+            if candidate not in cashtags:
+                cashtags.append(candidate)
+        return cashtags
 
     @staticmethod
     def _score(text: str, keywords: dict[str, int]) -> int:

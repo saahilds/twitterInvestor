@@ -51,6 +51,18 @@ $AAOI
  is sitting roughly 30% off its all time highs and the reason is dilution overhang. Every time this company raises capital the stock sells off as the market digests new shares."""
 
 
+def test_parser_prefers_action_cashtag_over_allowlisted_thesis_symbol() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["AMD", "MSFT"], default_trade_size_usd=1.0)
+    text = (
+        "adding $ZZZZ starter. Here is the thesis. "
+        "$AMD and $MSFT license patents from $ZZZZ."
+    )
+    signal = parser.parse(text, source_tweet_id="unlisted-entry")
+
+    assert signal.ticker == "ZZZZ"
+    assert signal.action == SignalAction.BUY
+
+
 def test_parser_took_position_is_buy_not_sells_off_false_positive() -> None:
     parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"], default_trade_size_usd=1.0)
     signal = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")

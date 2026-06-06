@@ -12,7 +12,7 @@ from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.service import TweetIngestionService
 from app.models.db_models import ParsedSignal, SignalAction
 from app.models.schemas import WorkerStateSnapshot
-from app.parsing.signal_parser import RuleBasedSignalParser
+from app.parsing.factory import SignalParser
 from app.risk.risk_manager import RiskManager
 from app.services.audit import ExecutionAuditLogger
 from app.services.trade_recorder import create_trade_record
@@ -26,7 +26,7 @@ class BotWorker:
         self,
         settings: Settings,
         ingestion_service: TweetIngestionService,
-        parser: RuleBasedSignalParser,
+        parser: SignalParser,
         risk_manager: RiskManager,
         broker: Broker,
         session_factory: Callable[[], Session],
