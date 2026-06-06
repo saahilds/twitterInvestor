@@ -284,7 +284,7 @@ JSON API: `GET /dashboard/data` or `GET /portfolio/pnl`.
   - `ENABLE_LIVE_TRADING=true`
   - `SIMULATION_MODE=false`
 - Trade size is normalized and capped by `MAX_TRADE_SIZE_USD`.
-- Tickers must be present in `ALLOWED_TICKERS`.
+- `ALLOWED_TICKERS` seeds the DB at startup; **BUY** signals for other US tickers still execute (new-ticker sizing applies). **SELL** requires an open Robinhood position (not the allowlist).
 
 ### Live trading test checklist (market hours)
 
@@ -332,7 +332,7 @@ JSON API: `GET /dashboard/data` or `GET /portfolio/pnl`.
 6. Start the bot and monitor `logs/bot.log`, `GET /trades`, `GET /signals`.
 7. Use `POST /pause` to stop new orders immediately.
 
-BUY signals place a **$1 GFD limit buy at the current ask**. **Live mode is BUY-only** — SELL signals are logged and rejected (`live_sell_blocked`). Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+BUY signals place a **limit buy at the ask** (or fractional market per `ORDER_EXECUTION_MODE`). **SELL** signals sell a **fraction of the live position** (trim ≈ 25%, half = 50%, closed/sell = 100%, or explicit `%` in the tweet) only when the ticker is held in Robinhood. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
 
 ## Railway Deployment
 

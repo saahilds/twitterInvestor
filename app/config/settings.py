@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
     signal_ml_min_confidence: float = 0.42
     signal_ml_min_margin: float = 0.08
+    # 0 = disabled. When > 0, BUY for tickers outside ALLOWED_TICKERS / recognized_tickers
+    # requires parser confidence at least this high (keyword + hybrid signals set confidence).
+    min_buy_confidence_unlisted: float = 0.0
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
 

@@ -27,6 +27,7 @@ class RiskConfig:
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False
     live_trading_enabled: bool = False
+    min_buy_confidence_unlisted: float = 0.0
     min_sell_notional_usd: float = 1.0
 
 
@@ -57,6 +58,13 @@ class RiskManager:
 
         ticker = signal.ticker.upper()
         recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(ticker, db)
+
+        if (
+            signal.action == SignalAction.BUY
+            and not recognized
+            and signal.confidence < self.config.min_buy_confidence_unlisted
+        ):
+            return RiskCheckResult(allowed=False, reason="unlisted_buy_low_confidence")
 
         if self.config.us_symbols_only and not _is_us_symbol(ticker):
             return RiskCheckResult(allowed=False, reason=f"non_us_symbol:{ticker}")

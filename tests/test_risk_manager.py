@@ -31,6 +31,63 @@ def test_risk_allows_new_us_ticker_buy(db_session) -> None:
     assert result.normalized_trade_usd == 10.0
 
 
+def test_risk_allows_confident_buy_when_ticker_not_in_seed(db_session) -> None:
+    manager = RiskManager(
+        RiskConfig(
+            seed_tickers={"AAPL"},
+            max_trade_size_usd=500,
+            default_trade_size_usd=100,
+            new_ticker_size_multiplier=10,
+            cooldown_seconds=300,
+            duplicate_window_seconds=300,
+            trading_window_enabled=False,
+            min_buy_confidence_unlisted=0.5,
+        )
+    )
+    signal = TradeSignal(
+        source_tweet_id="t-adea",
+        ticker="ADEA",
+        action=SignalAction.BUY,
+        confidence=0.72,
+        raw_text="entered $ADEA",
+        suggested_trade_usd=100,
+    )
+
+    result = manager.evaluate(signal, db_session, cash_available_usd=500.0)
+
+    assert result.allowed
+    assert result.is_new_ticker
+    assert result.normalized_trade_usd == 500.0
+
+
+def test_risk_blocks_unlisted_buy_when_confidence_below_floor(db_session) -> None:
+    manager = RiskManager(
+        RiskConfig(
+            seed_tickers={"AAPL"},
+            max_trade_size_usd=500,
+            default_trade_size_usd=100,
+            new_ticker_size_multiplier=10,
+            cooldown_seconds=300,
+            duplicate_window_seconds=300,
+            trading_window_enabled=False,
+            min_buy_confidence_unlisted=0.5,
+        )
+    )
+    signal = TradeSignal(
+        source_tweet_id="t-weak",
+        ticker="ADEA",
+        action=SignalAction.BUY,
+        confidence=0.2,
+        raw_text="maybe watching $ADEA",
+        suggested_trade_usd=100,
+    )
+
+    result = manager.evaluate(signal, db_session, cash_available_usd=500.0)
+
+    assert not result.allowed
+    assert result.reason == "unlisted_buy_low_confidence"
+
+
 def test_risk_enforces_cooldown(db_session) -> None:
     manager = RiskManager(
         RiskConfig(
