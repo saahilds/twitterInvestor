@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
+from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.text_normalize import extract_action_snippet
 
 
@@ -15,9 +16,11 @@ class RuleBasedSignalParser:
         self,
         known_tickers: Iterable[str],
         default_trade_size_usd: float = 1.0,
+        default_sell_fraction: float = 1.0,
     ) -> None:
         self.known_tickers = {ticker.upper() for ticker in known_tickers}
         self.default_trade_size_usd = default_trade_size_usd
+        self.default_sell_fraction = default_sell_fraction
         self.cashtag_pattern = re.compile(r"\$([A-Za-z]{1,5})\b")
         self.bare_ticker_pattern = re.compile(r"\b([A-Z]{1,5})\b")
 
@@ -73,6 +76,10 @@ class RuleBasedSignalParser:
         score = max(buy_score, sell_score)
         confidence = min(0.99, 0.45 + (score * 0.12))
 
+        sell_fraction = None
+        if action == SignalAction.SELL:
+            sell_fraction = infer_sell_fraction(raw_text, default_fraction=self.default_sell_fraction)
+
         return TradeSignal(
             source_tweet_id=source_tweet_id,
             ticker=ticker,
@@ -82,6 +89,7 @@ class RuleBasedSignalParser:
             score=score,
             raw_text=raw_text,
             suggested_trade_usd=self.default_trade_size_usd,
+            sell_fraction=sell_fraction,
         )
 
     def _extract_ticker(self, raw_text: str, upper_text: str, known_tickers: set[str]) -> str | None:

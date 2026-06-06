@@ -49,6 +49,7 @@ risk_manager = RiskManager(
         max_trades_per_ticker_per_day=settings.max_trades_per_ticker_per_day,
         daily_limit_counts_simulation=settings.daily_limit_counts_simulation,
         live_trading_enabled=settings.live_trading_enabled,
+        min_sell_notional_usd=settings.min_sell_notional_usd,
     )
 )
 

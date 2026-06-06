@@ -43,13 +43,20 @@ async def test_worker_buy_uses_limit_at_ask() -> None:
 
 
 @pytest.mark.asyncio
-async def test_worker_blocks_live_sell() -> None:
+async def test_worker_executes_live_sell() -> None:
     settings = Settings(
         simulation_mode=False,
         enable_live_trading=True,
     )
     broker = MagicMock()
-    broker.sell_market = AsyncMock()
+    broker.sell_market = AsyncMock(
+        return_value=MagicMock(
+            status="submitted",
+            order_id="live-sell-1",
+            simulation=False,
+            raw_response={},
+        )
+    )
 
     worker = BotWorker(
         settings=settings,
@@ -62,6 +69,5 @@ async def test_worker_blocks_live_sell() -> None:
         logger=logging.getLogger("test"),
     )
 
-    with pytest.raises(ValueError, match="live_sell_blocked"):
-        await worker._execute_order(SignalAction.SELL, "NVDA", 1.0)
-    broker.sell_market.assert_not_called()
+    await worker._execute_order(SignalAction.SELL, "NVDA", 250.0)
+    broker.sell_market.assert_awaited_once_with(ticker="NVDA", amount_usd=250.0)

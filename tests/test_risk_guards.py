@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from app.execution.holdings import BrokerHolding
 from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import TradeSignal
 from app.risk.risk_manager import RiskConfig, RiskManager
@@ -22,31 +23,44 @@ def _manager(**overrides) -> RiskManager:
     return RiskManager(RiskConfig(**defaults))
 
 
-def test_risk_rejects_live_sell(db_session) -> None:
+def test_risk_rejects_sell_when_not_in_portfolio(db_session) -> None:
     manager = _manager(live_trading_enabled=True)
     signal = TradeSignal(
         source_tweet_id="t-sell",
         ticker="NVDA",
         action=SignalAction.SELL,
         raw_text="selling NVDA",
-        suggested_trade_usd=1,
+        sell_fraction=1.0,
     )
-    result = manager.evaluate(signal, db_session)
+    result = manager.evaluate(signal, db_session, holding=None)
     assert not result.allowed
-    assert result.reason == "live_sell_blocked"
+    assert result.reason == "not_in_portfolio:NVDA"
 
 
-def test_risk_allows_simulated_sell_when_not_live(db_session) -> None:
-    manager = _manager(live_trading_enabled=False)
-    signal = TradeSignal(
-        source_tweet_id="t-sell-sim",
-        ticker="NVDA",
-        action=SignalAction.SELL,
-        raw_text="selling NVDA",
-        suggested_trade_usd=1,
+def test_risk_sells_fraction_of_portfolio_holding(db_session) -> None:
+    manager = _manager(live_trading_enabled=True, max_trade_size_usd=10_000)
+    holding = BrokerHolding(
+        ticker="ADEA",
+        quantity=20.0,
+        average_cost=10.0,
+        last_price=50.0,
+        market_value=1000.0,
+        cost_basis=200.0,
+        unrealized_pnl=800.0,
+        unrealized_pnl_pct=400.0,
     )
-    result = manager.evaluate(signal, db_session)
+    signal = TradeSignal(
+        source_tweet_id="t-sell-half",
+        ticker="ADEA",
+        action=SignalAction.SELL,
+        raw_text="sold half my $ADEA",
+        sell_fraction=0.5,
+    )
+    result = manager.evaluate(signal, db_session, holding=holding)
     assert result.allowed
+    assert result.normalized_trade_usd == 500.0
+    assert result.sell_fraction == 0.5
+    assert result.reason == "sell_50pct_portfolio"
 
 
 def test_risk_rejects_non_us_symbol(db_session) -> None:

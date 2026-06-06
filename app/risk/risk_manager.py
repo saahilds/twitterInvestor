@@ -6,9 +6,11 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
+from app.execution.holdings import BrokerHolding
 from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import RiskCheckResult, TradeSignal
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
+from app.risk.sell_sizing import resolve_sell_notional_usd
 from app.services.recognized_tickers import RecognizedTickerRegistry
 
 
@@ -25,6 +27,7 @@ class RiskConfig:
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False
     live_trading_enabled: bool = False
+    min_sell_notional_usd: float = 1.0
 
 
 class RiskManager:
@@ -44,12 +47,10 @@ class RiskManager:
         db: Session,
         *,
         cash_available_usd: float | None = None,
+        holding: BrokerHolding | None = None,
     ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
-
-        if self.config.live_trading_enabled and signal.action == SignalAction.SELL:
-            return RiskCheckResult(allowed=False, reason="live_sell_blocked")
 
         if not signal.ticker:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
@@ -63,16 +64,30 @@ class RiskManager:
         if self.config.trading_window_enabled and not is_within_regular_market_hours():
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
 
-        if not recognized and signal.action == SignalAction.SELL:
-            return RiskCheckResult(allowed=False, reason=f"unrecognized_ticker_sell:{ticker}")
-
-        normalized_trade, is_new_ticker = self._resolve_trade_size(
-            signal=signal,
-            recognized=recognized,
-            cash_available_usd=cash_available_usd,
-        )
-        if normalized_trade <= 0:
-            return RiskCheckResult(allowed=False, reason="invalid_trade_size")
+        sell_fraction: float | None = None
+        if signal.action == SignalAction.SELL:
+            if holding is None or holding.quantity <= 0:
+                return RiskCheckResult(allowed=False, reason=f"not_in_portfolio:{ticker}")
+            sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
+            if sell_fraction <= 0:
+                return RiskCheckResult(allowed=False, reason="sell_fraction_zero")
+            normalized_trade = resolve_sell_notional_usd(
+                holding,
+                sell_fraction,
+                max_trade_size_usd=self.config.max_trade_size_usd,
+                min_trade_notional_usd=self.config.min_sell_notional_usd,
+            )
+            if normalized_trade is None or normalized_trade <= 0:
+                return RiskCheckResult(allowed=False, reason="invalid_sell_size")
+            is_new_ticker = False
+        else:
+            normalized_trade, is_new_ticker = self._resolve_trade_size(
+                signal=signal,
+                recognized=recognized,
+                cash_available_usd=cash_available_usd,
+            )
+            if normalized_trade <= 0:
+                return RiskCheckResult(allowed=False, reason="invalid_trade_size")
 
         if self._tweet_already_traded(signal.source_tweet_id, db):
             return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}")
@@ -108,12 +123,17 @@ class RiskManager:
         if duplicate_signal is not None:
             return RiskCheckResult(allowed=False, reason=f"duplicate_signal:{ticker}:{signal.action.value}")
 
-        reason = "new_ticker_sized_up" if is_new_ticker else "ok"
+        if signal.action == SignalAction.SELL:
+            pct = int(round((sell_fraction or 0) * 100))
+            reason = f"sell_{pct}pct_portfolio"
+        else:
+            reason = "new_ticker_sized_up" if is_new_ticker else "ok"
         return RiskCheckResult(
             allowed=True,
             reason=reason,
             normalized_trade_usd=round(normalized_trade, 2),
             is_new_ticker=is_new_ticker,
+            sell_fraction=sell_fraction,
         )
 
     def _resolve_trade_size(
@@ -124,11 +144,7 @@ class RiskManager:
         cash_available_usd: float | None,
     ) -> tuple[float, bool]:
         if signal.action != SignalAction.BUY:
-            size = min(
-                signal.suggested_trade_usd or self.config.default_trade_size_usd,
-                self.config.max_trade_size_usd,
-            )
-            return max(0.0, size), False
+            return 0.0, False
 
         if recognized:
             size = min(self.config.default_trade_size_usd, self.config.max_trade_size_usd)

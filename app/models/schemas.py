@@ -27,6 +27,7 @@ class TradeSignal(BaseModel):
     score: int = 0
     raw_text: str
     suggested_trade_usd: float = 0.0
+    sell_fraction: float | None = None
 
 
 class RiskCheckResult(BaseModel):
@@ -34,6 +35,7 @@ class RiskCheckResult(BaseModel):
     reason: str
     normalized_trade_usd: float | None = None
     is_new_ticker: bool = False
+    sell_fraction: float | None = None
 
 
 class BrokerOrderResult(BaseModel):

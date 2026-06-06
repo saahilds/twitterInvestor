@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
 from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
+from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.signal_parser import RuleBasedSignalParser
 
 
@@ -15,6 +16,7 @@ class HybridSignalParser:
         self,
         known_tickers: Iterable[str],
         default_trade_size_usd: float = 1.0,
+        default_sell_fraction: float = 1.0,
         *,
         action_classifier: ActionClassifier | None = None,
         ml_min_confidence: float = 0.42,
@@ -24,6 +26,7 @@ class HybridSignalParser:
         self._rules = RuleBasedSignalParser(
             known_tickers=known_tickers,
             default_trade_size_usd=default_trade_size_usd,
+            default_sell_fraction=default_sell_fraction,
         )
         self._classifier = action_classifier or ActionClassifier.train()
         self._ml_min_confidence = ml_min_confidence
@@ -90,6 +93,12 @@ class HybridSignalParser:
         score = max(3, int(round(prediction.confidence * 10)))
         confidence = min(0.99, max(0.5, prediction.confidence))
         strength = RuleBasedSignalParser._strength_from_score(score)
+        sell_fraction = None
+        if prediction.action == SignalAction.SELL:
+            sell_fraction = infer_sell_fraction(
+                raw_text,
+                default_fraction=self._rules.default_sell_fraction,
+            )
 
         return TradeSignal(
             source_tweet_id=source_tweet_id,
@@ -100,6 +109,7 @@ class HybridSignalParser:
             score=score,
             raw_text=raw_text,
             suggested_trade_usd=suggested_trade_usd,
+            sell_fraction=sell_fraction,
         )
 
     @property

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
     signal_ml_min_confidence: float = 0.42
     signal_ml_min_margin: float = 0.08
+    default_sell_fraction: float = 1.0
+    min_sell_notional_usd: float = 1.0
 
     simulation_mode: bool = True
     enable_live_trading: bool = False

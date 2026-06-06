@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
 from app.execution.broker import Broker
+from app.execution.holdings import BrokerHolding
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.service import TweetIngestionService
 from app.models.db_models import ParsedSignal, SignalAction
@@ -121,14 +122,19 @@ class BotWorker:
             )
 
             cash_available_usd = None
-            if signal.action == SignalAction.BUY and isinstance(self.broker, RobinhoodBroker):
-                cash_available_usd = await asyncio.to_thread(self.broker.get_cash_available_usd)
+            holding: BrokerHolding | None = None
+            if isinstance(self.broker, RobinhoodBroker):
+                if signal.action == SignalAction.BUY:
+                    cash_available_usd = await asyncio.to_thread(self.broker.get_cash_available_usd)
+                elif signal.action == SignalAction.SELL and signal.ticker:
+                    holding = await self._fetch_holding(signal.ticker)
 
             with self.session_factory() as db:
                 risk_result = self.risk_manager.evaluate(
                     signal,
                     db,
                     cash_available_usd=cash_available_usd,
+                    holding=holding,
                 )
                 parsed_signal = ParsedSignal(
                     tweet_pk=tweet.tweet_pk,
@@ -203,6 +209,7 @@ class BotWorker:
                         "quantity": trade.quantity,
                         "trade_id": trade.id,
                         "is_new_ticker": risk_result.is_new_ticker,
+                        "sell_fraction": risk_result.sell_fraction,
                     },
                 )
 
@@ -220,8 +227,22 @@ class BotWorker:
                 return await self.broker.buy_limit_at_ask(ticker=ticker, amount_usd=amount_usd)
             return await self.broker.buy_market(ticker=ticker, amount_usd=amount_usd)
         if action == SignalAction.SELL:
-            if self.settings.live_trading_enabled:
-                raise ValueError("live_sell_blocked")
             return await self.broker.sell_market(ticker=ticker, amount_usd=amount_usd)
 
         raise ValueError(f"Unsupported signal action for execution: {action}")
+
+    async def _fetch_holding(self, ticker: str) -> BrokerHolding | None:
+        if not isinstance(self.broker, RobinhoodBroker):
+            return None
+        symbol = ticker.upper()
+        holdings, error = await asyncio.to_thread(self.broker.get_holdings)
+        if error:
+            self.logger.warning(
+                "holdings_fetch_failed",
+                extra={"event_type": "holdings", "ticker": symbol, "error": error},
+            )
+            return None
+        for row in holdings:
+            if row.ticker == symbol:
+                return row
+        return None

@@ -18,6 +18,15 @@ def test_parser_detects_sell_signal() -> None:
 
     assert signal.action == SignalAction.SELL
     assert signal.ticker == "META"
+    assert signal.sell_fraction == 0.25
+
+
+def test_parser_sell_half_fraction() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["NVDA"])
+    signal = parser.parse("sold half my $NVDA", source_tweet_id="half")
+
+    assert signal.action == SignalAction.SELL
+    assert signal.sell_fraction == 0.5
 
 
 def test_parser_parses_cashtag_not_on_allowlist_for_risk_layer() -> None:
