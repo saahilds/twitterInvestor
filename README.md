@@ -16,7 +16,7 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 - Broker interface with Robinhood + mock implementations
 - Structured logging to console and rotating file logs
 - FastAPI endpoints for health, tweets, signals, trades, pause/resume
-- Async worker loop designed for long-running deployment on Railway
+- Async worker loop designed for long-running deployment on Railway or a VPS (see [docs/VPS.md](docs/VPS.md))
 
 ## Project Structure
 
@@ -333,6 +333,17 @@ JSON API: `GET /dashboard/data` or `GET /portfolio/pnl`.
 7. Use `POST /pause` to stop new orders immediately.
 
 BUY signals place a **limit buy at the ask** (or fractional market per `ORDER_EXECUTION_MODE`). **SELL** signals sell a **fraction of the live position** (trim ≈ 25%, half = 50%, closed/sell = 100%, or explicit `%` in the tweet) only when the ticker is held in Robinhood. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+
+## VPS deployment (Hetzner)
+
+For production on Hetzner CX32 (extended hours, morning backfill, Caddy HTTPS dashboard): **[docs/VPS.md](docs/VPS.md)**.
+
+Quick start on the server:
+
+```bash
+cp .env.example .env   # then edit / scp from Mac
+./scripts/start_bot.sh
+```
 
 ## Railway Deployment
 

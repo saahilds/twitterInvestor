@@ -1,0 +1,12 @@
+# Replace example.com and /etc/caddy/Caddyfile path on the VPS.
+# Generate password hash: caddy hash-password --plaintext 'your-strong-password'
+#
+# Place hash in /etc/caddy/.dashboard_htpasswd (chmod 600).
+
+example.com {
+	encode gzip
+	basicauth {
+		admin {$DASHBOARD_BASIC_AUTH_HASH}
+	}
+	reverse_proxy 127.0.0.1:8000
+}
