@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 
@@ -9,12 +8,16 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
 from app.execution.broker import Broker
+from app.execution.holdings import BrokerHolding
+from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.service import TweetIngestionService
-from app.models.db_models import ParsedSignal, SignalAction, Trade
+from app.models.db_models import ParsedSignal, SignalAction
 from app.models.schemas import WorkerStateSnapshot
-from app.parsing.signal_parser import RuleBasedSignalParser
+from app.parsing.factory import SignalParser
 from app.risk.risk_manager import RiskManager
 from app.services.audit import ExecutionAuditLogger
+from app.services.trade_recorder import create_trade_record
+from app.services.trade_status import TradeStatusSync, trade_is_terminal
 
 
 class BotWorker:
@@ -24,12 +27,13 @@ class BotWorker:
         self,
         settings: Settings,
         ingestion_service: TweetIngestionService,
-        parser: RuleBasedSignalParser,
+        parser: SignalParser,
         risk_manager: RiskManager,
         broker: Broker,
         session_factory: Callable[[], Session],
         audit_logger: ExecutionAuditLogger,
         logger: logging.Logger,
+        trade_status_sync: TradeStatusSync | None = None,
     ) -> None:
         self.settings = settings
         self.ingestion_service = ingestion_service
@@ -38,6 +42,7 @@ class BotWorker:
         self.broker = broker
         self.session_factory = session_factory
         self.audit_logger = audit_logger
+        self.trade_status_sync = trade_status_sync
         self.logger = logger
 
         self._task: asyncio.Task[None] | None = None
@@ -51,7 +56,7 @@ class BotWorker:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop(), name="bot-worker")
-        self.audit_logger.write("INFO", "worker", "worker_started")
+        self.logger.debug("worker_started", extra={"event_type": "worker"})
 
     async def stop(self) -> None:
         self._running = False
@@ -61,15 +66,15 @@ class BotWorker:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        self.audit_logger.write("INFO", "worker", "worker_stopped")
+        self.logger.debug("worker_stopped", extra={"event_type": "worker"})
 
     def pause(self) -> None:
         self._paused = True
-        self.audit_logger.write("INFO", "worker", "worker_paused")
+        self.logger.debug("worker_paused", extra={"event_type": "worker"})
 
     def resume(self) -> None:
         self._paused = False
-        self.audit_logger.write("INFO", "worker", "worker_resumed")
+        self.logger.debug("worker_resumed", extra={"event_type": "worker"})
 
     def snapshot(self) -> WorkerStateSnapshot:
         return WorkerStateSnapshot(
@@ -107,10 +112,30 @@ class BotWorker:
             return
 
         for tweet in new_tweets:
-            signal = self.parser.parse(tweet.text, source_tweet_id=tweet.tweet_id)
+            with self.session_factory() as db:
+                known_tickers = self.risk_manager.registry.all_tickers(db)
+
+            signal = self.parser.parse(
+                tweet.text,
+                source_tweet_id=tweet.tweet_id,
+                extra_known_tickers=known_tickers,
+            )
+
+            cash_available_usd = None
+            holding: BrokerHolding | None = None
+            if isinstance(self.broker, RobinhoodBroker):
+                if signal.action == SignalAction.BUY:
+                    cash_available_usd = await asyncio.to_thread(self.broker.get_cash_available_usd)
+                elif signal.action == SignalAction.SELL and signal.ticker:
+                    holding = await self._fetch_holding(signal.ticker)
 
             with self.session_factory() as db:
-                risk_result = self.risk_manager.evaluate(signal, db)
+                risk_result = self.risk_manager.evaluate(
+                    signal,
+                    db,
+                    cash_available_usd=cash_available_usd,
+                    holding=holding,
+                )
                 parsed_signal = ParsedSignal(
                     tweet_pk=tweet.tweet_pk,
                     source_tweet_id=signal.source_tweet_id,
@@ -129,52 +154,72 @@ class BotWorker:
                 db.commit()
 
                 if not risk_result.allowed:
-                    self.audit_logger.write(
-                        "WARNING",
-                        "signal_rejected",
-                        "signal_rejected",
-                        {
-                            "tweet_id": tweet.tweet_id,
-                            "ticker": signal.ticker,
-                            "reason": risk_result.reason,
-                        },
-                    )
                     continue
 
             trade_amount = risk_result.normalized_trade_usd or self.settings.default_trade_size_usd
             order_result = await self._execute_order(signal.action, signal.ticker or "", trade_amount)
 
             with self.session_factory() as db:
-                db.add(
-                    Trade(
-                        parsed_signal_id=parsed_signal_id,
-                        ticker=signal.ticker or "",
-                        action=signal.action,
-                        amount_usd=trade_amount,
-                        quantity=order_result.quantity,
-                        status=order_result.status,
-                        simulation=order_result.simulation,
-                        broker_order_id=order_result.order_id,
-                        response_json=json.dumps(order_result.raw_response or {}, default=str),
-                    )
+                trade = create_trade_record(
+                    parsed_signal_id=parsed_signal_id,
+                    source_tweet_id=signal.source_tweet_id,
+                    ticker=signal.ticker or "",
+                    action=signal.action,
+                    amount_usd=trade_amount,
+                    order_result=order_result,
+                    order_execution_mode=self.settings.order_execution_mode,
                 )
+                db.add(trade)
                 db.commit()
+                db.refresh(trade)
 
-            event_type = "trade_executed" if order_result.simulation else "live_order_submitted"
-            self.audit_logger.write(
-                "INFO",
-                event_type,
-                event_type,
-                {
-                    "tweet_id": tweet.tweet_id,
-                    "ticker": signal.ticker,
-                    "action": signal.action.value,
-                    "amount_usd": trade_amount,
-                    "status": order_result.status,
-                    "simulation": order_result.simulation,
-                    "broker_order_id": order_result.order_id,
-                },
-            )
+                if (
+                    self.trade_status_sync is not None
+                    and not trade.simulation
+                    and trade.broker_order_id
+                    and not trade_is_terminal(trade.status)
+                ):
+                    await self.trade_status_sync.refresh(db, trade)
+                    db.commit()
+                    db.refresh(trade)
+                    order_result_status = trade.status
+                    fill_price = trade.fill_price
+                    limit_price = trade.limit_price
+                else:
+                    order_result_status = trade.status
+                    fill_price = trade.fill_price
+                    limit_price = trade.limit_price
+
+            if order_result.status != "failed":
+                event_type = "trade_executed" if order_result.simulation else "live_order_submitted"
+                self.logger.info(
+                    event_type,
+                    extra={
+                        "event_type": event_type,
+                        "tweet_id": tweet.tweet_id,
+                        "ticker": signal.ticker,
+                        "action": signal.action.value,
+                        "amount_usd": trade_amount,
+                        "status": order_result_status,
+                        "simulation": order_result.simulation,
+                        "broker_order_id": order_result.order_id,
+                        "order_type": trade.order_type,
+                        "limit_price": limit_price,
+                        "fill_price": fill_price,
+                        "quantity": trade.quantity,
+                        "trade_id": trade.id,
+                        "is_new_ticker": risk_result.is_new_ticker,
+                        "sell_fraction": risk_result.sell_fraction,
+                    },
+                )
+
+            if order_result.status != "failed" and signal.ticker:
+                with self.session_factory() as db:
+                    self.risk_manager.registry.register(
+                        signal.ticker,
+                        db,
+                        source_tweet_id=signal.source_tweet_id,
+                    )
 
     async def _execute_order(self, action: SignalAction, ticker: str, amount_usd: float):
         if action == SignalAction.BUY:
@@ -185,3 +230,19 @@ class BotWorker:
             return await self.broker.sell_market(ticker=ticker, amount_usd=amount_usd)
 
         raise ValueError(f"Unsupported signal action for execution: {action}")
+
+    async def _fetch_holding(self, ticker: str) -> BrokerHolding | None:
+        if not isinstance(self.broker, RobinhoodBroker):
+            return None
+        symbol = ticker.upper()
+        holdings, error = await asyncio.to_thread(self.broker.get_holdings)
+        if error:
+            self.logger.warning(
+                "holdings_fetch_failed",
+                extra={"event_type": "holdings", "ticker": symbol, "error": error},
+            )
+            return None
+        for row in holdings:
+            if row.ticker == symbol:
+                return row
+        return None

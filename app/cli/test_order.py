@@ -26,6 +26,21 @@ async def _run(args: argparse.Namespace) -> int:
     else:
         broker = RobinhoodBroker(settings=settings, logger=logger)
 
+    if settings.live_trading_enabled and isinstance(broker, RobinhoodBroker):
+        cash_available = await asyncio.to_thread(broker.get_cash_available_usd)
+        spendable = None if cash_available is None else max(0.0, cash_available - settings.cash_buffer_usd)
+        if spendable is None or spendable < args.amount:
+            payload = {
+                "error": "insufficient_cash",
+                "ticker": args.ticker.upper(),
+                "amount_usd": args.amount,
+                "cash_available_usd": cash_available,
+                "cash_buffer_usd": settings.cash_buffer_usd,
+                "spendable_usd": spendable,
+            }
+            print(json.dumps(payload, indent=2))
+            return 1
+
     result = await broker.buy_limit_at_ask(ticker=args.ticker.upper(), amount_usd=args.amount)
 
     payload = {

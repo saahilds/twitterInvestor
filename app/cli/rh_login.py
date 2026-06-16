@@ -21,9 +21,9 @@ async def _run(args: argparse.Namespace) -> int:
     broker = RobinhoodBroker(settings=settings, logger=logger)
 
     if args.list_accounts:
-        login_ok = await asyncio.to_thread(broker._login)
-        if not login_ok:
-            print(json.dumps({"ok": False, "error": "robinhood_login_failed"}, indent=2))
+        login_error = await asyncio.to_thread(broker._session.ensure_session, True)
+        if login_error is not None:
+            print(json.dumps({"ok": False, "error": login_error}, indent=2))
             return 1
         accounts = await asyncio.to_thread(broker.list_accounts)
         print(

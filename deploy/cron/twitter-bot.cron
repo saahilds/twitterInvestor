@@ -1,0 +1,12 @@
+# Cron for extended-hours schedule (America/New_York).
+# Install: crontab -e (as root or the user that owns /opt/twitterInvestor)
+#
+# Requires: cron TZ support (Ubuntu cron supports CRON_TZ).
+
+CRON_TZ=America/New_York
+
+# Mon–Fri 7:00 AM — backfill overnight tweets, resume worker
+0 7 * * 1-5 /opt/twitterInvestor/scripts/startup_backfill.sh >> /opt/twitterInvestor/data/logs/cron.log 2>&1
+
+# Mon–Fri 8:00 PM — pause worker (dashboard/API stay up)
+0 20 * * 1-5 /opt/twitterInvestor/scripts/evening_pause.sh >> /opt/twitterInvestor/data/logs/cron.log 2>&1

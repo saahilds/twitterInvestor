@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     target_account: str = "CKCapitalxx"
     poll_interval_seconds: int = 60
+    dashboard_positions_refresh_seconds: int = 300
     fetch_limit: int = 20
     ignore_replies: bool = True
     ignore_retweets: bool = True
@@ -52,8 +53,24 @@ class Settings(BaseSettings):
     )
     default_trade_size_usd: float = 1.0
     max_trade_size_usd: float = 5.0
+    new_ticker_size_multiplier: float = 10.0
+    thesis_trade_min_usd: float = 500.0
+    thesis_trade_max_usd: float = 1000.0
+    cash_buffer_usd: float = 0.0
+    min_buy_notional_usd: float = 1.0
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
+
+    signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
+    signal_ml_min_confidence: float = 0.42
+    signal_ml_min_margin: float = 0.08
+    # 0 = disabled. When > 0, BUY for tickers outside ALLOWED_TICKERS / recognized_tickers
+    # requires parser confidence at least this high (keyword + hybrid signals set confidence).
+    min_buy_confidence_unlisted: float = 0.0
+    default_sell_fraction: float = 1.0
+    min_sell_notional_usd: float = 1.0
+
+    chart_ytd_baseline_usd: float = 5000.0
 
     simulation_mode: bool = True
     enable_live_trading: bool = False
@@ -67,11 +84,17 @@ class Settings(BaseSettings):
     robinhood_password: str | None = None
     robinhood_mfa_secret: str | None = None
     robinhood_account: str | None = None
+    robinhood_login_retry_seconds: int = 300
+    robinhood_login_429_backoff_seconds: int = 900
+    robinhood_session_validate_seconds: int = 120
 
     log_level: str = "INFO"
     log_file: str = "logs/bot.log"
     log_max_bytes: int = 2_000_000
     log_backup_count: int = 5
+
+    pnl_include_simulation: bool = True
+    pnl_quote_cache_seconds: int = 60
 
     @field_validator("allowed_tickers", mode="before")
     @classmethod

@@ -11,11 +11,12 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 - Supports persistent Chrome profile so login session is reused
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
-- Basic risk controls: allowlist, max trade size, cooldown, duplicate prevention
+- Basic risk controls: recognized ticker registry (auto-grows), max trade size, cooldown, duplicate prevention
+- Conviction-based buy sizing: reload tweets use `DEFAULT_TRADE_SIZE_USD`; thesis tweets scale $500–$1000 by confidence (capped by cash, never margin)
 - Broker interface with Robinhood + mock implementations
 - Structured logging to console and rotating file logs
 - FastAPI endpoints for health, tweets, signals, trades, pause/resume
-- Async worker loop designed for long-running deployment on Railway
+- Async worker loop designed for long-running deployment on Railway or a VPS (see [docs/VPS.md](docs/VPS.md))
 
 ## Project Structure
 
@@ -107,17 +108,7 @@ tests/
    - Without `PLAYWRIGHT_CDP_URL`, the bot launches its own persistent Chrome profile.
    - With `PLAYWRIGHT_CDP_URL`, the bot attaches to your existing Chrome (best for avoiding secure-login restrictions).
 
-7. Optional: run tests:
-
-   ```bash
-   uv run pytest
-   ```
-
-8. Optional one-time backfill for 2026 tweets:
-
-   ```bash
-   uv run python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
-   ```
+7. See [Terminal commands](#terminal-commands) for tests, backfill, dashboard, and account balance.
 
 ---
 
@@ -156,17 +147,7 @@ tests/
    uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 
-6. Optional: run tests:
-
-   ```bash
-   pytest
-   ```
-
-7. Optional one-time backfill for 2026 tweets:
-
-   ```bash
-   python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
-   ```
+6. See [Terminal commands](#terminal-commands) for tests, backfill, dashboard, and account balance.
 
 ---
 
@@ -176,7 +157,7 @@ When a **new tweet** is detected, you will now see a log event like:
 
 ```json
 {
-  "message": "new_tweet_detected",
+  "message": "tweet_ingested",
   "event_type": "tweet_ingested",
   "context": {
     "tweet_id": "1234567890",
@@ -191,10 +172,10 @@ Tips for market session monitoring:
 
 - Keep `LOG_LEVEL=INFO` in `.env`
 - Run the server in a dedicated terminal and leave it open during market hours
-- Watch for:
-  - `new_tweet_detected` (new tweet arrived)
-  - `signal_rejected` (blocked by risk rules)
-  - `trade_executed` (simulation or live execution result)
+- At INFO level you will see:
+  - `tweet_ingested` (new tweet stored)
+  - `trade_executed` or `live_order_submitted` (order placed; failed orders are not logged)
+- Rejected signals are still saved in the DB (`parsed_signals.rejection_reason`) but not logged
 
 ### Twitter Backend Modes
 
@@ -214,36 +195,125 @@ Persistent auth-related env vars:
 
 ### Historical tweet backfill
 
-The live worker only ingests tweets visible on the current profile page. Use one of these one-off backfill commands to load older tweets into `trading_bot.db` (same Playwright Chrome profile; deduplicates by `tweet_id`).
+The live worker only ingests tweets visible on the current profile page. See [Terminal commands — Backfill tweets](#backfill-tweets) for one-off backfill commands.
 
-**Full calendar year** (recommended for large 2026 backfills):
+### P&L by ticker
+
+Trades in SQLite are the source of truth. See [Terminal commands — P&L](#pnl) and [Dashboard & health](#dashboard--health) for CLI and UI access.
+
+- **Realized P&L**: from SELL trades vs average cost of shares held.
+- **Unrealized P&L**: open shares × (last price − avg cost).
+- Use `--live-only` / `?live_only=true` to exclude simulated trades.
+
+## Terminal commands
+
+Quick reference for day-to-day operations. Primary examples use `uv run`; without `uv`, use `python -m` and `pytest` from your activated venv.
+
+### Run the bot
+
+```bash
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+VPS (Docker):
+
+```bash
+./scripts/start_bot.sh
+./scripts/stop_bot.sh
+```
+
+### Dashboard & health
+
+- **Dashboard UI:** [http://127.0.0.1:8000/dashboard](http://127.0.0.1:8000/dashboard) (auto-refreshes every 15s)
+- **Health check:**
+
+  ```bash
+  curl http://127.0.0.1:8000/health
+  ```
+
+- **JSON snapshot:** `GET /dashboard/data`, `GET /portfolio/pnl`
+
+The dashboard shows bot status, Robinhood holdings, P&amp;L by ticker, recent tweets/trades, and pause/resume controls.
+
+### Account balance (Robinhood)
+
+Verify login and view balances (no order placed). The bot sizes buys from **cash only**, not buying power (margin).
+
+```bash
+uv run python -m app.cli.rh_login --list-accounts
+uv run python -m app.cli.rh_login --verify-all-accounts
+uv run python -m app.cli.rh_login
+```
+
+Set `ROBINHOOD_ACCOUNT=individual`, `joint`, or an exact `account_number` from `--list-accounts`.
+
+### P&L
+
+```bash
+uv run python -m app.cli.pnl
+uv run python -m app.cli.pnl --live-only
+uv run python -m app.cli.pnl --json
+```
+
+### Test a single order
+
+During regular market hours only:
+
+```bash
+uv run python -m app.cli.test_order --ticker SPY --amount 1.0
+```
+
+Pre-checks available cash before submitting (live mode).
+
+### Pause / resume
+
+```bash
+curl -X POST http://127.0.0.1:8000/pause
+curl -X POST http://127.0.0.1:8000/resume
+```
+
+### Backfill tweets
+
+**Full calendar year** (large 2026 backfills):
 
 ```bash
 uv run python -m app.scripts.backfill_tweets --year 2026 --max-tweets 12000 --max-scrolls 2500 --include-replies --include-retweets
 ```
 
-**Since a start date** (lighter scroll; uses ingestion service):
+**Since a start date** (lighter scroll):
 
 ```bash
 uv run python -m app.cli.backfill --since 2026-01-01
 ```
 
-CLI options for `app.cli.backfill`:
+`app.cli.backfill` options: `--since` (default `2026-01-01`), `--max-scrolls`, `--scroll-pause-ms`. Replies/retweets follow `IGNORE_REPLIES` / `IGNORE_RETWEETS` unless overridden on the year script.
 
-- `--since`: include tweets posted on/after this date (default `2026-01-01`)
-- `--max-scrolls`: override `BACKFILL_MAX_SCROLLS` (default `150`)
-- `--scroll-pause-ms`: override `BACKFILL_SCROLL_PAUSE_MS` (default `1500`)
+### Tests
 
-Replies/retweets follow `IGNORE_REPLIES` / `IGNORE_RETWEETS` unless overridden on the year script flags.
+```bash
+uv run pytest
+```
 
-After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading_bot.db`.
+### Inspect DB / API
+
+```bash
+sqlite3 trading_bot.db
+curl "http://127.0.0.1:8000/tweets?limit=200"
+curl "http://127.0.0.1:8000/trades?limit=50"
+curl "http://127.0.0.1:8000/signals?limit=50"
+```
 
 ## API Endpoints
 
 - `GET /health`
 - `GET /tweets?limit=50`
 - `GET /signals?limit=50`
-- `GET /trades?limit=50`
+- `GET /portfolio/pnl` — realized + unrealized P&L by ticker (live Robinhood quotes, ~60s cache)
+- `GET /dashboard` — live UI (status, P&amp;L, tweets, trades; refreshes every 15s)
+- `GET /dashboard/data` — JSON snapshot for the dashboard
+- `GET /trades?limit=50` — execution status, limit/fill price, quantity, broker order id, errors
+- `GET /trades/{trade_id}`
+- `POST /trades/{trade_id}/refresh` — pull latest Robinhood order state (filled/cancelled/open)
 - `POST /pause`
 - `POST /resume`
 
@@ -253,8 +323,8 @@ After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading
 - Live trading requires both:
   - `ENABLE_LIVE_TRADING=true`
   - `SIMULATION_MODE=false`
-- Trade size is normalized and capped by `MAX_TRADE_SIZE_USD`.
-- Tickers must be present in `ALLOWED_TICKERS`.
+- Buy sizing uses conviction tiers (reload = `DEFAULT_TRADE_SIZE_USD`, thesis = `THESIS_TRADE_MIN_USD`–`THESIS_TRADE_MAX_USD` by confidence), capped by `MAX_TRADE_SIZE_USD` and available **cash** (never buying power / margin).
+- `ALLOWED_TICKERS` seeds the DB at startup; **BUY** signals for other US tickers still execute (new-ticker sizing applies). **SELL** requires an open Robinhood position (not the allowlist).
 
 ### Live trading test checklist (market hours)
 
@@ -265,8 +335,10 @@ After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading
    ENABLE_LIVE_TRADING=true
    BROKER_BACKEND=robinhood
    ORDER_EXECUTION_MODE=limit_at_ask
-   DEFAULT_TRADE_SIZE_USD=1.0
-   MAX_TRADE_SIZE_USD=1.0
+   DEFAULT_TRADE_SIZE_USD=100.0
+   MAX_TRADE_SIZE_USD=1000.0
+   THESIS_TRADE_MIN_USD=500.0
+   THESIS_TRADE_MAX_USD=1000.0
    TRADING_WINDOW_ENABLED=true
    US_SYMBOLS_ONLY=true
    ROBINHOOD_USERNAME=...
@@ -283,26 +355,23 @@ After backfill, inspect results with `GET /tweets?limit=200` or `sqlite3 trading
 
    Expect `live_trading_enabled: true` and `within_market_hours: true`.
 
-4. Verify Robinhood login (any time — no order placed):
-
-   ```bash
-   uv run python -m app.cli.rh_login --list-accounts
-   uv run python -m app.cli.rh_login --verify-all-accounts
-   uv run python -m app.cli.rh_login
-   ```
-
-   `--verify-all-accounts` logs in once and prints buying power / equity for every linked account (individual and joint). Set `ROBINHOOD_ACCOUNT=individual` or `joint` (or paste an exact `account_number` from `--list-accounts`). Expect `"ok": true` and the selected account in the response.
-
-5. Pre-flight a single order during market hours (optional):
-
-   ```bash
-   uv run python -m app.cli.test_order --ticker SPY --amount 1.0
-   ```
-
+4. Verify Robinhood login and account balance — see [Terminal commands — Account balance](#account-balance-robinhood).
+5. Pre-flight a single order during market hours (optional) — see [Terminal commands — Test a single order](#test-a-single-order).
 6. Start the bot and monitor `logs/bot.log`, `GET /trades`, `GET /signals`.
-7. Use `POST /pause` to stop new orders immediately.
+7. Use `POST /pause` to stop new orders immediately — see [Terminal commands — Pause / resume](#pause--resume).
 
-BUY signals place a **$1 GFD limit buy at the current ask**. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+BUY signals place a **limit buy at the ask** (or fractional market per `ORDER_EXECUTION_MODE`). **SELL** signals sell a **fraction of the live position** (trim ≈ 25%, half = 50%, closed/sell = 100%, or explicit `%` in the tweet) only when the ticker is held in Robinhood. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+
+## VPS deployment (Hetzner)
+
+For production on Hetzner CX32 (extended hours, morning backfill, Caddy HTTPS dashboard): **[docs/VPS.md](docs/VPS.md)**.
+
+Quick start on the server:
+
+```bash
+cp .env.example .env   # then edit / scp from Mac
+./scripts/start_bot.sh
+```
 
 ## Railway Deployment
 

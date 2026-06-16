@@ -11,6 +11,15 @@ from app.execution.robinhood_accounts import (
     resolve_account_number,
     summarize_account,
 )
+from app.execution.buying_power import fetch_robinhood_cash_available_usd
+from app.execution.holdings import (
+    BrokerHolding,
+    BrokerPortfolioMetrics,
+    fetch_portfolio_metrics,
+    fetch_robinhood_holdings,
+)
+from app.execution.order_details import enrich_broker_order_result
+from app.execution.robinhood_session import RobinhoodSessionManager
 from app.models.schemas import BrokerOrderResult
 
 try:
@@ -18,19 +27,19 @@ try:
 except Exception:  # pragma: no cover - environment-specific
     rh = None
 
-try:
-    import pyotp
-except Exception:  # pragma: no cover - environment-specific
-    pyotp = None
-
 
 class RobinhoodBroker:
     """Robinhood order execution with explicit live-trading guardrails."""
 
-    def __init__(self, settings: Settings, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        logger: logging.Logger,
+        session_manager: RobinhoodSessionManager | None = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger
-        self._logged_in = False
+        self._session = session_manager or RobinhoodSessionManager(settings=settings, logger=logger)
         self._account_number: str | None = None
 
     async def buy_market(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
@@ -41,16 +50,24 @@ class RobinhoodBroker:
 
     async def buy_limit_at_ask(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
         if not self.settings.live_trading_enabled:
-            return BrokerOrderResult(
-                status="simulated",
-                order_id=f"sim-{uuid.uuid4().hex[:12]}",
-                simulation=True,
-                quantity=round(amount_usd, 4),
-                raw_response={
-                    "order_type": "limit_at_ask",
-                    "ticker": ticker,
-                    "amount_usd": amount_usd,
-                },
+            simulated_ask = 100.0
+            quantity = round(amount_usd / simulated_ask, 6)
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="simulated",
+                    order_id=f"sim-{uuid.uuid4().hex[:12]}",
+                    simulation=True,
+                    quantity=quantity,
+                    account_number=self._account_number,
+                    raw_response={
+                        "order_type": "limit_at_ask",
+                        "ticker": ticker,
+                        "amount_usd": amount_usd,
+                        "ask": simulated_ask,
+                        "limit_price": simulated_ask,
+                    },
+                ),
+                order_execution_mode="limit_at_ask",
             )
 
         if rh is None:
@@ -67,30 +84,87 @@ class RobinhoodBroker:
         try:
             response = await asyncio.to_thread(self._submit_limit_buy_at_ask, ticker, amount_usd)
             order_id = response.get("order_id")
-            return BrokerOrderResult(
-                status=response.get("status", "submitted"),
-                order_id=order_id,
-                simulation=False,
-                quantity=response.get("quantity"),
-                raw_response=response,
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status=response.get("status", "submitted"),
+                    order_id=order_id,
+                    simulation=False,
+                    quantity=response.get("quantity"),
+                    account_number=response.get("account_number"),
+                    raw_response=response,
+                ),
+                order_execution_mode="limit_at_ask",
             )
         except ValueError as exc:
             self.logger.warning(
                 "live_order_rejected",
                 extra={"error": str(exc), "ticker": ticker, "amount_usd": amount_usd},
             )
-            return BrokerOrderResult(
-                status="failed",
-                simulation=False,
-                raw_response={"error": str(exc), "ticker": ticker},
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="failed",
+                    simulation=False,
+                    raw_response={"error": str(exc), "ticker": ticker, "order_type": "limit_at_ask"},
+                ),
+                order_execution_mode="limit_at_ask",
             )
         except Exception as exc:
             self.logger.exception("broker_order_failed", extra={"error": str(exc), "ticker": ticker})
-            return BrokerOrderResult(
-                status="failed",
-                simulation=False,
-                raw_response={"error": str(exc), "ticker": ticker},
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="failed",
+                    simulation=False,
+                    raw_response={"error": str(exc), "ticker": ticker, "order_type": "limit_at_ask"},
+                ),
+                order_execution_mode="limit_at_ask",
             )
+
+    def fetch_order_info(self, order_id: str) -> dict | None:
+        if rh is None or not order_id:
+            return None
+        if self._ensure_live_session() is not None:
+            return None
+        info = rh.orders.get_stock_order_info(order_id)
+        if isinstance(info, list) and info:
+            info = info[0]
+        return info if isinstance(info, dict) else None
+
+    def get_broker_snapshot(self) -> tuple[list[BrokerHolding], BrokerPortfolioMetrics, str | None]:
+        """Fetch holdings and portfolio metrics with a single auth check."""
+        if rh is None:
+            empty = BrokerPortfolioMetrics(None, None, None, None, None)
+            return [], empty, "robin_stocks_unavailable"
+        login_error = self._ensure_live_session()
+        if login_error:
+            empty = BrokerPortfolioMetrics(None, None, None, None, None)
+            return [], empty, login_error
+        holdings = fetch_robinhood_holdings(self._account_number)[0]
+        metrics = fetch_portfolio_metrics(self._account_number)
+        return holdings, metrics, None
+
+    def get_cash_available_usd(self) -> float | None:
+        if rh is None:
+            return None
+        login_error = self._ensure_live_session()
+        if login_error:
+            return None
+        return fetch_robinhood_cash_available_usd(self._account_number)
+
+    def get_holdings(self) -> tuple[list[BrokerHolding], str | None]:
+        if rh is None:
+            return [], "robin_stocks_unavailable"
+        login_error = self._ensure_live_session()
+        if login_error:
+            return [], login_error
+        return fetch_robinhood_holdings(self._account_number)
+
+    def get_portfolio_metrics(self) -> BrokerPortfolioMetrics:
+        if rh is None:
+            return BrokerPortfolioMetrics(None, None, None, None, None)
+        login_error = self._ensure_live_session()
+        if login_error:
+            return BrokerPortfolioMetrics(None, None, None, None, None)
+        return fetch_portfolio_metrics(self._account_number)
 
     async def _place_order(self, side: str, ticker: str, amount_usd: float) -> BrokerOrderResult:
         if not self.settings.live_trading_enabled:
@@ -115,18 +189,32 @@ class RobinhoodBroker:
         try:
             response = await asyncio.to_thread(self._submit_order, side, ticker, amount_usd)
             order_id = response.get("id") if isinstance(response, dict) else None
-            return BrokerOrderResult(
-                status="submitted",
-                order_id=order_id,
-                simulation=False,
-                raw_response=response if isinstance(response, dict) else {"raw": str(response)},
+            mode = "fractional_market"
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="submitted",
+                    order_id=order_id,
+                    simulation=False,
+                    account_number=self._account_number,
+                    raw_response={
+                        "order_type": mode,
+                        "side": side,
+                        "ticker": ticker,
+                        "amount_usd": amount_usd,
+                        "broker_response": response if isinstance(response, dict) else {"raw": str(response)},
+                    },
+                ),
+                order_execution_mode=mode,
             )
         except Exception as exc:
             self.logger.exception("broker_order_failed", extra={"error": str(exc), "ticker": ticker, "side": side})
-            return BrokerOrderResult(
-                status="failed",
-                simulation=False,
-                raw_response={"error": str(exc), "ticker": ticker, "side": side},
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="failed",
+                    simulation=False,
+                    raw_response={"error": str(exc), "ticker": ticker, "side": side, "order_type": "fractional_market"},
+                ),
+                order_execution_mode="fractional_market",
             )
 
     async def verify_login(self) -> dict:
@@ -137,9 +225,9 @@ class RobinhoodBroker:
         if not self.settings.robinhood_username or not self.settings.robinhood_password:
             return {"ok": False, "error": "missing_robinhood_credentials"}
 
-        login_ok = await asyncio.to_thread(self._login)
-        if not login_ok:
-            return {"ok": False, "error": "robinhood_login_failed"}
+        login_ok = await asyncio.to_thread(self._session.ensure_session, force=True)
+        if login_ok is not None:
+            return {"ok": False, "error": login_ok}
 
         try:
             profile = await asyncio.to_thread(self._load_login_profile)
@@ -151,7 +239,7 @@ class RobinhoodBroker:
     def list_accounts(self) -> list[dict]:
         if rh is None:
             return []
-        if not self._logged_in and not self._login():
+        if self._ensure_live_session() is not None:
             return []
         return [summarize_account(account) for account in load_all_accounts()]
 
@@ -163,9 +251,9 @@ class RobinhoodBroker:
         if not self.settings.robinhood_username or not self.settings.robinhood_password:
             return {"ok": False, "error": "missing_robinhood_credentials"}
 
-        login_ok = await asyncio.to_thread(self._login)
-        if not login_ok:
-            return {"ok": False, "error": "robinhood_login_failed"}
+        login_ok = await asyncio.to_thread(self._session.ensure_session, force=True)
+        if login_ok is not None:
+            return {"ok": False, "error": login_ok}
 
         try:
             user = await asyncio.to_thread(rh.profiles.load_user_profile)
@@ -212,8 +300,9 @@ class RobinhoodBroker:
         }
 
     def _ensure_live_session(self) -> str | None:
-        if not self._login():
-            return "robinhood_login_failed"
+        login_error = self._session.ensure_session()
+        if login_error:
+            return login_error
         try:
             self._account_number = resolve_account_number(
                 self.settings.robinhood_account,
@@ -223,28 +312,8 @@ class RobinhoodBroker:
             return str(exc)
         return None
 
-    def _login(self) -> bool:
-        username = self.settings.robinhood_username
-        password = self.settings.robinhood_password
-        if not username or not password:
-            self.logger.error("missing_robinhood_credentials")
-            return False
-
-        mfa_code = None
-        if self.settings.robinhood_mfa_secret:
-            if pyotp is None:
-                self.logger.error("pyotp_unavailable_for_mfa")
-                return False
-            mfa_code = pyotp.TOTP(self.settings.robinhood_mfa_secret).now()
-
-        result = rh.login(
-            username=username,
-            password=password,
-            mfa_code=mfa_code,
-            expiresIn=86400,
-        )
-        self._logged_in = bool(result)
-        return self._logged_in
+    def session_snapshot(self):
+        return self._session.snapshot()
 
     def _submit_limit_buy_at_ask(self, ticker: str, amount_usd: float) -> dict:
         symbol = ticker.upper()

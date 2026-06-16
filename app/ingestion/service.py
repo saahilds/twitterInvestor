@@ -172,7 +172,7 @@ class TweetIngestionService:
                 )
                 if log_each_new:
                     self.logger.info(
-                        "new_tweet_detected",
+                        "tweet_ingested",
                         extra={
                             "event_type": "tweet_ingested",
                             "tweet_id": tweet.tweet_id,
@@ -185,15 +185,6 @@ class TweetIngestionService:
                     )
             db.commit()
 
-        if new_tweets and log_each_new:
-            self.logger.info(
-                "new_tweets_ingested",
-                extra={
-                    "event_type": "ingestion_summary",
-                    "count": len(new_tweets),
-                    "account": self.target_account,
-                },
-            )
         return PersistStats(
             inserted=new_tweets,
             skipped_duplicate=skipped_duplicate,
