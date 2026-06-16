@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
+from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.signal_parser import RuleBasedSignalParser
@@ -94,11 +95,14 @@ class HybridSignalParser:
         confidence = min(0.99, max(0.5, prediction.confidence))
         strength = RuleBasedSignalParser._strength_from_score(score)
         sell_fraction = None
+        buy_conviction = None
         if prediction.action == SignalAction.SELL:
             sell_fraction = infer_sell_fraction(
                 raw_text,
                 default_fraction=self._rules.default_sell_fraction,
             )
+        elif prediction.action == SignalAction.BUY:
+            buy_conviction = infer_buy_conviction(raw_text)
 
         return TradeSignal(
             source_tweet_id=source_tweet_id,
@@ -110,6 +114,7 @@ class HybridSignalParser:
             raw_text=raw_text,
             suggested_trade_usd=suggested_trade_usd,
             sell_fraction=sell_fraction,
+            buy_conviction=buy_conviction,
         )
 
     @property

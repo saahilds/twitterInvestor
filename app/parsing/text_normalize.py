@@ -12,6 +12,23 @@ _THESIS_SPLIT = re.compile(
 _ACTION_SNIPPET_MAX_CHARS = 480
 
 
+def has_thesis_marker(text: str) -> bool:
+    """True when the tweet contains an explicit thesis/setup section."""
+    return bool(_THESIS_SPLIT.search(text.strip()))
+
+
+def thesis_body_length(text: str) -> int:
+    """Character length of the thesis body after the action lead-in."""
+    stripped = text.strip()
+    parts = _THESIS_SPLIT.split(stripped, maxsplit=1)
+    if len(parts) > 1:
+        return len(parts[1].strip())
+    snippet = extract_action_snippet(text)
+    if len(stripped) > len(snippet):
+        return len(stripped) - len(snippet)
+    return 0
+
+
 def extract_action_snippet(text: str, *, max_chars: int = _ACTION_SNIPPET_MAX_CHARS) -> str:
     """Prefer the opening lines where trade intent usually appears."""
     stripped = text.strip()

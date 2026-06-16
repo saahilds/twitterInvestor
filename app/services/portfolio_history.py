@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.db_models import AccountSnapshot, SignalAction, Trade
 from app.risk.market_hours import (
+    US_EASTERN,
     chart_session_bounds_utc,
     filter_chart_session_points,
     is_within_extended_chart_hours,
+    to_eastern,
 )
 
 SNAPSHOT_MIN_INTERVAL_SECONDS = 300
@@ -20,13 +23,7 @@ IMPORTANT_TRADE_STATUSES = frozenset(
 EXECUTED_TRADE_STATUSES = frozenset({"filled", "executed", "confirmed"})
 
 RANGE_KEYS = frozenset({"1d", "1w", "1m", "3m", "ytd", "all"})
-
-
-def _as_utc(moment: datetime) -> datetime:
-    if moment.tzinfo is None:
-        return moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc)
-
+DEFAULT_YTD_BASELINE_USD = 5000.0
 
 RANGE_DAYS: dict[str, int | None] = {
     "1d": 1,
@@ -38,16 +35,52 @@ RANGE_DAYS: dict[str, int | None] = {
 }
 
 
+@dataclass(slots=True)
+class ChartWindow:
+    window_start: datetime
+    window_end: datetime
+
+
+@dataclass(slots=True)
+class PeriodSummary:
+    current_value: float
+    period_start_value: float
+    change_usd: float
+    change_pct: float
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "current_value": round(self.current_value, 2),
+            "period_start_value": round(self.period_start_value, 2),
+            "change_usd": round(self.change_usd, 2),
+            "change_pct": round(self.change_pct, 4),
+        }
+
+
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def ytd_start_utc(moment: datetime) -> datetime:
+    """Jan 1 1pm ET for the chart year (matches daily point anchors)."""
+    year = to_eastern(_as_utc(moment)).year
+    anchor = datetime.combine(date(year, 1, 1), time(13, 0), tzinfo=US_EASTERN)
+    return anchor.astimezone(timezone.utc)
+
+
 def range_start(range_key: str, moment: datetime) -> datetime | None:
+    """UTC start instant for a chart range (rolling lookback, except YTD/all)."""
     if range_key not in RANGE_KEYS:
         range_key = "1w"
     if range_key == "all":
         return None
     if range_key == "ytd":
-        return datetime(moment.year, 1, 1, tzinfo=timezone.utc)
+        return ytd_start_utc(moment)
     days = RANGE_DAYS[range_key]
     assert days is not None
-    return moment - timedelta(days=days)
+    return _as_utc(moment) - timedelta(days=days)
 
 
 def is_executed_trade(trade: Trade) -> bool:
@@ -149,6 +182,115 @@ def _dedupe_snapshot_series(
     return [deduped[key] for key in sorted(deduped)]
 
 
+def _aggregate_daily_chart_points(
+    points: list[tuple[datetime, float]],
+) -> list[tuple[datetime, float]]:
+    """Collapse intraday snapshots to one point per ET day (last reading), anchored at 1pm ET."""
+    by_day: dict[date, tuple[datetime, float]] = {}
+    for moment, value in points:
+        day = to_eastern(_as_utc(moment)).date()
+        prev = by_day.get(day)
+        if prev is None or _as_utc(moment) >= _as_utc(prev[0]):
+            by_day[day] = (_as_utc(moment), value)
+
+    aggregated: list[tuple[datetime, float]] = []
+    for day in sorted(by_day):
+        _, value = by_day[day]
+        anchor = datetime.combine(day, time(13, 0), tzinfo=US_EASTERN).astimezone(timezone.utc)
+        aggregated.append((anchor, value))
+    return aggregated
+
+
+def resolve_window(
+    range_key: str,
+    *,
+    now: datetime,
+    start: datetime | None,
+    session_open: datetime,
+    session_end: datetime,
+    snapshot_pts: list[tuple[datetime, float]],
+) -> ChartWindow:
+    """Single source of truth for chart x-axis bounds."""
+    if range_key == "1d":
+        return ChartWindow(window_start=_as_utc(session_open), window_end=_as_utc(session_end))
+    if range_key == "all":
+        if snapshot_pts:
+            return ChartWindow(window_start=_as_utc(snapshot_pts[0][0]), window_end=_as_utc(now))
+        return ChartWindow(window_start=_as_utc(session_open), window_end=_as_utc(now))
+    assert start is not None
+    return ChartWindow(window_start=_as_utc(start), window_end=_as_utc(now))
+
+
+def resample_points(
+    series: list[tuple[datetime, float]],
+    range_key: str,
+) -> list[tuple[datetime, float]]:
+    if range_key != "1d" and len(series) > 1:
+        return _aggregate_daily_chart_points(series)
+    return series
+
+
+def apply_baseline(
+    series: list[tuple[datetime, float]],
+    *,
+    range_key: str,
+    window_open: datetime,
+    baseline_usd: float,
+) -> list[tuple[datetime, float]]:
+    if range_key == "ytd":
+        return _prepend_chart_baseline(
+            series,
+            window_open=window_open,
+            baseline_usd=baseline_usd,
+        )
+    return series
+
+
+def _prepend_chart_baseline(
+    series: list[tuple[datetime, float]],
+    *,
+    window_open: datetime,
+    baseline_usd: float,
+) -> list[tuple[datetime, float]]:
+    """Assume ``baseline_usd`` at ``window_open`` when history starts later."""
+    anchor = _as_utc(window_open)
+    if not series:
+        return [(anchor, baseline_usd)]
+    first_moment = _as_utc(series[0][0])
+    if first_moment <= anchor + timedelta(hours=24):
+        return series
+    return [(anchor, baseline_usd), *series]
+
+
+def compute_period_summary(
+    series: list[tuple[datetime, float]],
+    *,
+    live_value: float | None = None,
+) -> PeriodSummary:
+    if not series:
+        value = live_value if live_value is not None else 0.0
+        return PeriodSummary(
+            current_value=value,
+            period_start_value=value,
+            change_usd=0.0,
+            change_pct=0.0,
+        )
+
+    period_start = series[0][1]
+    current = live_value if live_value is not None else series[-1][1]
+    change_usd = current - period_start
+    if period_start != 0:
+        change_pct = (change_usd / period_start) * 100.0
+    else:
+        change_pct = 0.0 if change_usd == 0 else 100.0
+    return PeriodSummary(
+        current_value=current,
+        period_start_value=period_start,
+        change_usd=change_usd,
+        change_pct=change_pct,
+    )
+
+
 def build_measured_balance_series(
     snapshot_pts: list[tuple[datetime, float]],
     *,
@@ -207,58 +349,22 @@ def trade_annotations(
     return [row for row in rows if is_executed_trade(row)]
 
 
-def build_chart_series(
-    db: Session,
+def build_trade_annotation_dicts(
+    trades: list[Trade],
     *,
+    window: ChartWindow,
     range_key: str,
-    account_number: str | None,
-    current_value: float | None,
-    live_trades_only: bool,
-) -> tuple[list[dict[str, object]], list[dict[str, object]], str, dict[str, str | None]]:
-    """Chart values are measured ``stocks_plus_cash`` during 7am–8pm ET (extended session)."""
-    if range_key not in RANGE_KEYS:
-        range_key = "1w"
-
-    now = datetime.now(timezone.utc)
-    start = range_start(range_key, now)
-    session_open, session_end = chart_session_bounds_utc(now)
-    if range_key == "1d":
-        window_open, window_end = session_open, session_end
-    else:
-        window_open = start if start is not None else session_open
-        window_end = now
-
-    snapshot_pts = _snapshot_points(
-        db,
-        account_number=account_number,
-        start=start,
-        end=now,
-    )
-    live_value = current_value if is_within_extended_chart_hours(now) else None
-    series = build_measured_balance_series(
-        snapshot_pts,
-        current_value=live_value,
-        session_end=window_end,
-        session_open=window_open,
-    )
-
-    if len(series) >= 2:
-        source = "snapshots"
-    elif len(series) == 1:
-        source = "live_only" if live_value is not None else "limited"
-    else:
-        source = "limited"
-
-    points = [{"t": moment.isoformat(), "v": round(value, 2)} for moment, value in series]
-
+) -> list[dict[str, object]]:
     annotations: list[dict[str, object]] = []
-    window_open_utc = _as_utc(window_open)
-    window_end_utc = _as_utc(window_end)
-    for trade in trade_annotations(db, start=start, end=now, live_trades_only=live_trades_only):
+    window_start = _as_utc(window.window_start)
+    window_end = _as_utc(window.window_end)
+    filter_extended_hours = range_key == "1d"
+
+    for trade in trades:
         trade_at = _as_utc(trade.created_at)
-        if trade_at < window_open_utc or trade_at > window_end_utc:
+        if trade_at < window_start or trade_at > window_end:
             continue
-        if not is_within_extended_chart_hours(trade_at):
+        if filter_extended_hours and not is_within_extended_chart_hours(trade_at):
             continue
         action = trade.action.value
         sim = " (sim)" if trade.simulation else ""
@@ -274,11 +380,84 @@ def build_chart_series(
                 "label": f"{action} {trade.ticker} ${trade.amount_usd:.0f}{sim}",
             }
         )
+    return annotations
 
-    chart_x_min = session_open if range_key == "1d" else window_open
-    chart_x_max = session_end if range_key == "1d" else window_end
+
+def _series_source(
+    series: list[tuple[datetime, float]],
+    *,
+    live_value: float | None,
+) -> str:
+    if len(series) >= 2:
+        return "snapshots"
+    if len(series) == 1:
+        return "live_only" if live_value is not None else "limited"
+    return "limited"
+
+
+def build_chart_series(
+    db: Session,
+    *,
+    range_key: str,
+    account_number: str | None,
+    current_value: float | None,
+    live_trades_only: bool,
+    ytd_baseline_usd: float = DEFAULT_YTD_BASELINE_USD,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], str, dict[str, str | None], dict[str, float]]:
+    """Chart values are measured ``stocks_plus_cash`` during 7am–8pm ET (extended session)."""
+    if range_key not in RANGE_KEYS:
+        range_key = "1w"
+
+    now = datetime.now(timezone.utc)
+    start = range_start(range_key, now)
+    session_open, session_end = chart_session_bounds_utc(now)
+    snapshot_pts = _snapshot_points(
+        db,
+        account_number=account_number,
+        start=start,
+        end=now,
+    )
+    chart_window = resolve_window(
+        range_key,
+        now=now,
+        start=start,
+        session_open=session_open,
+        session_end=session_end,
+        snapshot_pts=snapshot_pts,
+    )
+
+    live_value = current_value if is_within_extended_chart_hours(now) else None
+    series = build_measured_balance_series(
+        snapshot_pts,
+        current_value=live_value,
+        session_end=chart_window.window_end,
+        session_open=chart_window.window_start,
+    )
+    series = resample_points(series, range_key)
+    series = apply_baseline(
+        series,
+        range_key=range_key,
+        window_open=chart_window.window_start,
+        baseline_usd=ytd_baseline_usd,
+    )
+
+    summary = compute_period_summary(series, live_value=live_value)
+    source = _series_source(series, live_value=live_value)
+    points = [{"t": moment.isoformat(), "v": round(value, 2)} for moment, value in series]
+
+    trades = trade_annotations(db, start=start, end=now, live_trades_only=live_trades_only)
+    annotations = build_trade_annotation_dicts(
+        trades,
+        window=chart_window,
+        range_key=range_key,
+    )
+
+    window_start_iso = chart_window.window_start.isoformat()
+    window_end_iso = chart_window.window_end.isoformat()
     window = {
-        "session_open": chart_x_min.isoformat(),
-        "session_end": chart_x_max.isoformat(),
+        "window_start": window_start_iso,
+        "window_end": window_end_iso,
+        "session_open": window_start_iso,
+        "session_end": window_end_iso,
     }
-    return points, annotations, source, window
+    return points, annotations, source, window, summary.as_dict()

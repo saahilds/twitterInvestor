@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     default_trade_size_usd: float = 1.0
     max_trade_size_usd: float = 5.0
     new_ticker_size_multiplier: float = 10.0
+    thesis_trade_min_usd: float = 500.0
+    thesis_trade_max_usd: float = 1000.0
+    cash_buffer_usd: float = 0.0
+    min_buy_notional_usd: float = 1.0
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
@@ -65,6 +69,8 @@ class Settings(BaseSettings):
     min_buy_confidence_unlisted: float = 0.0
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
+
+    chart_ytd_baseline_usd: float = 5000.0
 
     simulation_mode: bool = True
     enable_live_trading: bool = False

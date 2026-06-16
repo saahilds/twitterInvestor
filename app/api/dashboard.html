@@ -267,31 +267,113 @@
     footer a { color: var(--blue); text-decoration: none; }
     footer a:hover { text-decoration: underline; }
     .chart-panel { margin-bottom: 1rem; }
-    .chart-toolbar {
+    .balance-hero { margin-bottom: 0.5rem; }
+    .balance-hero-value {
+      font-size: 2rem;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.15;
+    }
+    .balance-hero-row {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.65rem;
-      margin-bottom: 0.75rem;
+      align-items: baseline;
+      gap: 0.5rem;
+      margin-top: 0.35rem;
+      font-size: 0.9rem;
+      font-variant-numeric: tabular-nums;
     }
+    .balance-hero-change.pos { color: var(--green); }
+    .balance-hero-change.neg { color: var(--red); }
+    .balance-hero-period { color: var(--muted); font-size: 0.8rem; }
+    .balance-hero-scrub {
+      margin-top: 0.25rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .balance-chart-canvas {
+      position: relative;
+      width: 100%;
+      height: 300px;
+      margin: 0.5rem 0 0.35rem;
+    }
+    .balance-lwc-mount {
+      position: absolute;
+      inset: 0;
+    }
+    .balance-trade-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    .balance-trade-line {
+      position: absolute;
+      top: 0;
+      bottom: 28px;
+      width: 0;
+      border-left: 2px dashed;
+      opacity: 0.85;
+    }
+    .balance-trade-line.buy { border-color: var(--green); }
+    .balance-trade-line.sell { border-color: var(--red); }
+    .balance-trade-label {
+      position: absolute;
+      top: 4px;
+      font-size: 0.625rem;
+      font-weight: 600;
+      padding: 2px 5px;
+      border-radius: 3px;
+      background: rgba(22, 29, 40, 0.92);
+      color: var(--text);
+      white-space: nowrap;
+      transform: translateX(-50%);
+    }
+    .balance-trade-label.buy { color: var(--green); }
+    .balance-trade-label.sell { color: var(--red); }
+    .balance-legend {
+      display: flex;
+      gap: 0.75rem;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+    .balance-legend span::before {
+      content: "";
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 0.25rem;
+      vertical-align: middle;
+    }
+    .balance-legend .buy::before { background: var(--green); }
+    .balance-legend .sell::before { background: var(--red); }
+    .balance-chart-meta {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 0.65rem;
+    }
+    .balance-range-group { margin-top: 0.25rem; }
     .range-group { display: flex; flex-wrap: wrap; gap: 0.35rem; }
     .range-btn {
-      padding: 0.3rem 0.65rem;
-      font-size: 0.72rem;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--bg-elevated);
+      padding: 0.35rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      border-radius: 999px;
+      border: none;
+      background: transparent;
       color: var(--muted);
       cursor: pointer;
     }
+    .range-btn:hover { color: var(--text); }
     .range-btn.active {
-      border-color: var(--blue);
-      color: var(--blue);
-      background: rgba(96, 165, 250, 0.12);
+      color: var(--text);
+      background: var(--bg-elevated);
+      box-shadow: inset 0 0 0 1px var(--border);
     }
-    .chart-wrap { position: relative; height: 280px; }
-    .chart-meta { font-size: 0.72rem; color: var(--muted); }
     .table-toolbar {
       display: flex;
       flex-wrap: wrap;
@@ -324,22 +406,9 @@
     th.sortable.sorted-desc .sort-arrow { opacity: 1; color: var(--blue); }
     th.sortable.sorted-asc .sort-arrow::after { content: "▲"; }
     th.sortable.sorted-desc .sort-arrow::after { content: "▼"; }
-    .legend-inline { display: flex; gap: 0.75rem; font-size: 0.7rem; color: var(--muted); }
-    .legend-inline span::before {
-      content: "";
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      border-radius: 2px;
-      margin-right: 0.25rem;
-      vertical-align: middle;
-    }
-    .legend-inline .balance::before { background: var(--blue); }
-    .legend-inline .buy::before { background: var(--green); }
-    .legend-inline .sell::before { background: var(--red); }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="/dashboard/balance-chart.js"></script>
 </head>
 <body>
   <div class="wrap">
@@ -380,28 +449,10 @@
           <div class="stat"><label>Unrealized</label><div class="val" id="rhUnrealized">—</div></div>
         </div>
         <div class="panel chart-panel">
-          <div class="chart-toolbar">
-            <div>
-              <h3 style="margin:0 0 0.35rem">Account balance (stocks + cash)</h3>
-              <div class="chart-meta" id="chartMeta">Loading chart…</div>
-            </div>
-            <div class="range-group" id="chartRangeGroup">
-              <button type="button" class="range-btn active" data-range="1d">1D</button>
-              <button type="button" class="range-btn" data-range="1w">1W</button>
-              <button type="button" class="range-btn" data-range="1m">1M</button>
-              <button type="button" class="range-btn" data-range="3m">3M</button>
-              <button type="button" class="range-btn" data-range="ytd">YTD</button>
-              <button type="button" class="range-btn" data-range="all">All</button>
-            </div>
-            <div class="legend-inline">
-              <span class="balance">Stocks + cash</span>
-              <span class="buy">Buy</span>
-              <span class="sell">Sell</span>
-            </div>
-          </div>
-          <div class="chart-wrap">
-            <canvas id="portfolioChart"></canvas>
-          </div>
+          <h3 style="margin:0 0 0.5rem;font-size:0.85rem;color:var(--muted);font-weight:500">
+            Account balance (stocks + cash)
+          </h3>
+          <div id="balanceChartRoot"></div>
         </div>
         <div class="panel">
           <h3>Open positions</h3>
@@ -505,9 +556,7 @@
     let allTickers = [];
     let rhHoldingsData = [];
     let botPnlData = [];
-    let portfolioChart = null;
-    let chartRange = "1d";
-    let chartSessionWindow = null;
+    let balanceChart = null;
     let dashboardState = null;
     let lastBrokerHoldings = null;
     let rhSort = { key: null, dir: null };
@@ -541,14 +590,30 @@
       d.textContent = s || "";
       return d.innerHTML;
     };
-    const chartLabel = (iso) => {
+    function initBalanceChart() {
+      const root = document.getElementById("balanceChartRoot");
+      if (!root || typeof BalanceChart === "undefined") return;
+      balanceChart = new BalanceChart(root, {
+        onRangeChange: () => loadChart(),
+      });
+      balanceChart.setRange("1d");
+    }
+
+    async function loadChart() {
+      if (!balanceChart) initBalanceChart();
+      if (!balanceChart) return;
+      const liveOnly = document.getElementById("liveOnly").checked;
+      const range = balanceChart.getRange();
       try {
-        const d = new Date(iso);
-        return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-      } catch {
-        return iso;
+        const res = await fetch(`/dashboard/chart?range=${range}&live_only=${liveOnly}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        balanceChart.update(data);
+      } catch (err) {
+        const meta = balanceChart.root?.querySelector("[data-chart-meta]");
+        if (meta) meta.textContent = `Chart unavailable: ${err.message}`;
       }
-    };
+    }
 
     function sortRows(rows, key, dir) {
       const mult = dir === "asc" ? 1 : -1;
@@ -610,295 +675,6 @@
       const q = (query || "").trim().toUpperCase();
       if (!q) return rows;
       return rows.filter((row) => String(row.ticker || "").toUpperCase().includes(q));
-    }
-
-    async function loadChart() {
-      const liveOnly = document.getElementById("liveOnly").checked;
-      const meta = document.getElementById("chartMeta");
-      try {
-        const res = await fetch(`/dashboard/chart?range=${chartRange}&live_only=${liveOnly}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        chartSessionWindow = {
-          session_open: data.session_open,
-          session_end: data.session_end,
-        };
-        renderChart(data);
-        const src = data.source === "snapshots"
-          ? "Measured balance · 7am–8pm ET (pre/after-hours)"
-          : data.source === "live_only"
-            ? "Live extended session — keep dashboard open 7am–8pm ET for history"
-            : data.source === "limited"
-              ? "No extended-session snapshots yet"
-              : data.source;
-        const sessionHint =
-          data.session_open && data.session_end
-            ? ` · ${chartLabel(data.session_open)} – ${chartLabel(data.session_end)}`
-            : "";
-        meta.textContent = `${src}${sessionHint} · ${data.points.length} pts · ${data.annotations.length} trades`;
-      } catch (err) {
-        meta.textContent = `Chart unavailable: ${err.message}`;
-      }
-    }
-
-    function balanceLinePoints(points) {
-      let chartPoints = points.map((p) => ({
-        x: new Date(p.t).getTime(),
-        y: Number(p.v),
-      }));
-      chartPoints.sort((a, b) => a.x - b.x);
-      if (chartPoints.length === 1) {
-        const only = chartPoints[0];
-        chartPoints = [
-          { x: only.x - 60 * 60 * 1000, y: only.y },
-          only,
-        ];
-      }
-      return chartPoints;
-    }
-
-    function balanceAtTime(sortedPoints, timeMs) {
-      if (!sortedPoints.length) return 0;
-      if (timeMs <= sortedPoints[0].x) return sortedPoints[0].y;
-      const last = sortedPoints[sortedPoints.length - 1];
-      if (timeMs >= last.x) return last.y;
-      for (let i = 0; i < sortedPoints.length - 1; i++) {
-        const a = sortedPoints[i];
-        const b = sortedPoints[i + 1];
-        if (timeMs >= a.x && timeMs <= b.x) {
-          const span = b.x - a.x;
-          if (span <= 0) return b.y;
-          const ratio = (timeMs - a.x) / span;
-          return a.y + ratio * (b.y - a.y);
-        }
-      }
-      return last.y;
-    }
-
-    function chartAxisBounds(balancePoints, trades, sessionWindow) {
-      const ys = balancePoints.map((p) => p.y);
-      let xMin;
-      let xMax;
-      if (sessionWindow?.session_open && sessionWindow?.session_end) {
-        xMin = new Date(sessionWindow.session_open).getTime();
-        xMax = new Date(sessionWindow.session_end).getTime();
-      } else {
-        const xs = balancePoints.map((p) => p.x);
-        for (const trade of trades || []) {
-          xs.push(new Date(trade.t).getTime());
-        }
-        if (!xs.length) {
-          const now = Date.now();
-          return { xMin: now - 3600000, xMax: now, yMin: 0, yMax: 1 };
-        }
-        const xSpan = Math.max(...xs) - Math.min(...xs) || 60 * 60 * 1000;
-        const xPad = Math.max(xSpan * 0.04, 5 * 60 * 1000);
-        xMin = Math.min(...xs) - xPad;
-        xMax = Math.max(...xs) + xPad;
-      }
-      if (!ys.length) {
-        return { xMin, xMax, yMin: 0, yMax: 1 };
-      }
-      const yMinRaw = Math.min(...ys);
-      const yMaxRaw = Math.max(...ys);
-      const ySpan = Math.max(yMaxRaw - yMinRaw, yMaxRaw * 0.02, 50);
-      return {
-        xMin,
-        xMax,
-        yMin: yMinRaw - ySpan * 0.12,
-        yMax: yMaxRaw + ySpan * 0.12,
-      };
-    }
-
-    const accountValueChartPlugin = {
-      id: "accountValueOverlay",
-      beforeDatasetsDraw(chart) {
-        const trades = chart.options.plugins?.accountValueOverlay?.trades || [];
-        const xScale = chart.scales.x;
-        const yScale = chart.scales.y;
-        if (!xScale || !yScale || !trades.length) return;
-
-        const ctx = chart.ctx;
-        const top = yScale.top;
-        const bottom = yScale.bottom;
-
-        for (const trade of trades) {
-          const x = xScale.getPixelForValue(new Date(trade.t).getTime());
-          if (x < xScale.left || x > xScale.right) continue;
-
-          const isBuy = trade.action === "BUY";
-          const color = isBuy ? "#34d399" : "#f87171";
-
-          ctx.save();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([5, 4]);
-          ctx.beginPath();
-          ctx.moveTo(x, top);
-          ctx.lineTo(x, bottom);
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          ctx.font = "600 10px system-ui, sans-serif";
-          ctx.fillStyle = "rgba(22, 29, 40, 0.92)";
-          const label = trade.label || `${trade.action} ${trade.ticker}`;
-          const textW = ctx.measureText(label).width;
-          const padX = 4;
-          const padY = 3;
-          const boxW = textW + padX * 2;
-          const boxH = 14;
-          let labelX = x + 4;
-          let labelY = top + 6;
-          if (labelX + boxW > chart.chartArea.right) {
-            labelX = x - boxW - 4;
-          }
-          ctx.fillRect(labelX, labelY, boxW, boxH);
-          ctx.fillStyle = "#eef2f7";
-          ctx.fillText(label, labelX + padX, labelY + 11);
-          ctx.restore();
-        }
-      },
-    };
-
-    if (typeof Chart !== "undefined") {
-      Chart.register(accountValueChartPlugin);
-    }
-
-    function renderChart(data) {
-      const canvas = document.getElementById("portfolioChart");
-      const meta = document.getElementById("chartMeta");
-      if (!canvas || typeof Chart === "undefined") return;
-      if (!data.points.length) {
-        if (portfolioChart) portfolioChart.destroy();
-        portfolioChart = null;
-        if (meta && !meta.textContent.includes("unavailable")) {
-          meta.textContent = "No balance history yet — snapshots record every ~5 min while the dashboard is open.";
-        }
-        return;
-      }
-
-      const balancePoints = balanceLinePoints(data.points);
-      const trades = data.annotations || [];
-      const bounds = chartAxisBounds(
-        balancePoints,
-        trades,
-        { session_open: data.session_open, session_end: data.session_end }
-      );
-
-      const tradeMarkers = trades.map((trade) => {
-        const x = new Date(trade.t).getTime();
-        return {
-          x,
-          y: balanceAtTime(balancePoints, x),
-          trade,
-        };
-      });
-
-      const buyMarkers = tradeMarkers.filter((m) => m.trade.action === "BUY");
-      const sellMarkers = tradeMarkers.filter((m) => m.trade.action !== "BUY");
-
-      if (portfolioChart) portfolioChart.destroy();
-      portfolioChart = new Chart(canvas, {
-        type: "line",
-        data: {
-          datasets: [
-            {
-              label: "Stocks + cash",
-              data: balancePoints,
-              parsing: false,
-              order: 1,
-              showLine: true,
-              borderColor: "#60a5fa",
-              borderWidth: 2.5,
-              backgroundColor: "rgba(96, 165, 250, 0.15)",
-              fill: true,
-              stepped: false,
-              tension: 0.15,
-              spanGaps: true,
-              pointRadius: balancePoints.length > 120 ? 0 : 3,
-              pointHoverRadius: 6,
-              pointBackgroundColor: "#60a5fa",
-              pointBorderColor: "#0f1419",
-              pointBorderWidth: 1,
-            },
-            {
-              type: "scatter",
-              label: "Buy",
-              data: buyMarkers,
-              parsing: false,
-              order: 2,
-              showLine: false,
-              pointStyle: "triangle",
-              pointRadius: 7,
-              pointHoverRadius: 9,
-              pointBackgroundColor: "#34d399",
-              pointBorderColor: "#0f1419",
-              pointBorderWidth: 1,
-            },
-            {
-              type: "scatter",
-              label: "Sell",
-              data: sellMarkers,
-              parsing: false,
-              order: 2,
-              showLine: false,
-              pointStyle: "triangle",
-              pointRotation: 180,
-              pointRadius: 7,
-              pointHoverRadius: 9,
-              pointBackgroundColor: "#f87171",
-              pointBorderColor: "#0f1419",
-              pointBorderWidth: 1,
-            },
-          ],
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          interaction: { mode: "nearest", axis: "x", intersect: false },
-          plugins: {
-            legend: { display: false },
-            accountValueOverlay: { trades },
-            tooltip: {
-              filter: (item) => item.datasetIndex === 0 || item.raw?.trade,
-              callbacks: {
-                title: (items) => {
-                  const raw = items[0].raw;
-                  const t = raw?.trade?.t || new Date(raw.x).toISOString();
-                  return chartLabel(t);
-                },
-                label: (ctx) => {
-                  if (ctx.raw?.trade) {
-                    return ctx.raw.trade.label;
-                  }
-                  return `Stocks + cash $${Number(ctx.parsed.y).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                },
-              },
-            },
-          },
-          scales: {
-            x: {
-              type: "time",
-              min: bounds.xMin,
-              max: bounds.xMax,
-              time: {
-                tooltipFormat: "MMM d, yyyy h:mm a",
-              },
-              ticks: { maxTicksLimit: 8, maxRotation: 0 },
-            },
-            y: {
-              min: bounds.yMin,
-              max: bounds.yMax,
-              ticks: {
-                callback: (v) => `$${Number(v).toLocaleString()}`,
-              },
-            },
-          },
-          elements: {
-            line: { borderJoinStyle: "round" },
-          },
-        },
-      });
     }
 
     function brokerHoldingsForRender(data) {
@@ -1221,14 +997,6 @@
 
     document.getElementById("refreshBtn").addEventListener("click", load);
     document.getElementById("liveOnly").addEventListener("change", load);
-    document.getElementById("chartRangeGroup").addEventListener("click", (e) => {
-      const btn = e.target.closest(".range-btn");
-      if (!btn) return;
-      chartRange = btn.dataset.range;
-      document.querySelectorAll(".range-btn").forEach((el) => el.classList.remove("active"));
-      btn.classList.add("active");
-      loadChart();
-    });
     document.getElementById("rhTickerFilter").addEventListener("input", renderRhHoldingsTable);
     document.getElementById("botTickerFilter").addEventListener("input", renderBotPnlTable);
     document.getElementById("rhHoldingsHead").addEventListener("click", (e) => {
@@ -1255,6 +1023,7 @@
       }
     });
 
+    initBalanceChart();
     load();
     startCountdown();
   </script>

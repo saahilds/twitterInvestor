@@ -18,11 +18,11 @@ def parse_cash_amount(value: object) -> float | None:
 
 
 def cash_available_from_account_profile(profile: dict) -> float | None:
-    """Prefer cash fields over buying_power to avoid sizing into margin."""
+    """Return spendable cash only — never buying_power (margin)."""
     if not isinstance(profile, dict):
         return None
 
-    for key in ("cash", "portfolio_cash", "cash_available_for_withdrawal", "buying_power"):
+    for key in ("cash", "portfolio_cash", "cash_available_for_withdrawal"):
         amount = parse_cash_amount(profile.get(key))
         if amount is not None:
             return amount

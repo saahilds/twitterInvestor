@@ -5,6 +5,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.db_models import SignalAction
+from app.parsing.buy_conviction import BuyConviction
 
 
 class IngestedTweet(BaseModel):
@@ -28,6 +29,7 @@ class TradeSignal(BaseModel):
     raw_text: str
     suggested_trade_usd: float = 0.0
     sell_fraction: float | None = None
+    buy_conviction: BuyConviction | None = None
 
 
 class RiskCheckResult(BaseModel):
@@ -208,9 +210,19 @@ class TradeChartAnnotationRead(BaseModel):
     label: str
 
 
+class PortfolioChartSummary(BaseModel):
+    current_value: float
+    period_start_value: float
+    change_usd: float
+    change_pct: float
+
+
 class PortfolioChartResponse(BaseModel):
     range: str
     source: str
+    window_start: str | None = None
+    window_end: str | None = None
+    summary: PortfolioChartSummary | None = None
     points: list[ChartPointRead]
     annotations: list[TradeChartAnnotationRead]
     session_open: str | None = None

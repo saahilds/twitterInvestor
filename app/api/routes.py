@@ -23,6 +23,7 @@ from app.models.schemas import (
     HealthResponse,
     ParsedSignalRead,
     PortfolioChartResponse,
+    PortfolioChartSummary,
     PortfolioPnlResponse,
     TradeChartAnnotationRead,
     RobinhoodHoldingRead,
@@ -246,17 +247,21 @@ def create_router(
                 current_value = portfolio_history.latest_snapshot_value(
                     db, account_number=account_number
                 )
-            points, annotations, source, window = portfolio_history.build_chart_series(
+            points, annotations, source, window, summary = portfolio_history.build_chart_series(
                 db,
                 range_key=range_key,
                 account_number=account_number,
                 current_value=current_value,
                 live_trades_only=live_only,
+                ytd_baseline_usd=settings.chart_ytd_baseline_usd,
             )
 
         return PortfolioChartResponse(
             range=range_key,
             source=source,
+            window_start=window.get("window_start"),
+            window_end=window.get("window_end"),
+            summary=PortfolioChartSummary.model_validate(summary),
             points=[ChartPointRead.model_validate(point) for point in points],
             annotations=[TradeChartAnnotationRead.model_validate(row) for row in annotations],
             session_open=window.get("session_open"),
@@ -334,6 +339,11 @@ def create_router(
     async def dashboard() -> FileResponse:
         html_path = Path(__file__).resolve().parent / "dashboard.html"
         return FileResponse(html_path)
+
+    @router.get("/dashboard/balance-chart.js")
+    async def balance_chart_js() -> FileResponse:
+        js_path = Path(__file__).resolve().parent / "balance-chart.js"
+        return FileResponse(js_path, media_type="application/javascript")
 
     @router.post("/pause", response_model=WorkerControlResponse)
     async def pause_worker() -> WorkerControlResponse:

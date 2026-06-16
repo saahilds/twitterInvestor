@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.execution.holdings import BrokerHolding
 from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import RiskCheckResult, TradeSignal
+from app.parsing.buy_conviction import BuyConviction
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
 from app.risk.sell_sizing import resolve_sell_notional_usd
 from app.services.recognized_tickers import RecognizedTickerRegistry
@@ -29,6 +30,10 @@ class RiskConfig:
     live_trading_enabled: bool = False
     min_buy_confidence_unlisted: float = 0.0
     min_sell_notional_usd: float = 1.0
+    thesis_trade_min_usd: float = 500.0
+    thesis_trade_max_usd: float = 1000.0
+    cash_buffer_usd: float = 0.0
+    min_buy_notional_usd: float = 1.0
 
 
 class RiskManager:
@@ -73,6 +78,7 @@ class RiskManager:
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
 
         sell_fraction: float | None = None
+        buy_conviction: BuyConviction | None = None
         if signal.action == SignalAction.SELL:
             if holding is None or holding.quantity <= 0:
                 return RiskCheckResult(allowed=False, reason=f"not_in_portfolio:{ticker}")
@@ -89,13 +95,16 @@ class RiskManager:
                 return RiskCheckResult(allowed=False, reason="invalid_sell_size")
             is_new_ticker = False
         else:
-            normalized_trade, is_new_ticker = self._resolve_trade_size(
+            if self.config.live_trading_enabled and cash_available_usd is None:
+                return RiskCheckResult(allowed=False, reason="insufficient_cash_data")
+
+            normalized_trade, is_new_ticker, buy_conviction = self._resolve_trade_size(
                 signal=signal,
                 recognized=recognized,
                 cash_available_usd=cash_available_usd,
             )
-            if normalized_trade <= 0:
-                return RiskCheckResult(allowed=False, reason="invalid_trade_size")
+            if normalized_trade <= 0 or normalized_trade < self.config.min_buy_notional_usd:
+                return RiskCheckResult(allowed=False, reason="insufficient_cash")
 
         if self._tweet_already_traded(signal.source_tweet_id, db):
             return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}")
@@ -135,7 +144,7 @@ class RiskManager:
             pct = int(round((sell_fraction or 0) * 100))
             reason = f"sell_{pct}pct_portfolio"
         else:
-            reason = "new_ticker_sized_up" if is_new_ticker else "ok"
+            reason = self._buy_reason(buy_conviction, normalized_trade)
         return RiskCheckResult(
             allowed=True,
             reason=reason,
@@ -150,18 +159,40 @@ class RiskManager:
         signal: TradeSignal,
         recognized: bool,
         cash_available_usd: float | None,
-    ) -> tuple[float, bool]:
+    ) -> tuple[float, bool, BuyConviction]:
         if signal.action != SignalAction.BUY:
-            return 0.0, False
+            return 0.0, False, BuyConviction.STANDARD
 
-        if recognized:
-            size = min(self.config.default_trade_size_usd, self.config.max_trade_size_usd)
-            return max(0.0, size), False
+        conviction = signal.buy_conviction or BuyConviction.STANDARD
+        if conviction == BuyConviction.THESIS:
+            target = self._thesis_size_from_confidence(signal.confidence)
+        else:
+            target = self.config.default_trade_size_usd
 
-        target = self.config.default_trade_size_usd * self.config.new_ticker_size_multiplier
+        target = min(target, self.config.max_trade_size_usd)
+
         if cash_available_usd is not None:
-            target = min(target, cash_available_usd)
-        return max(0.0, target), True
+            spendable = max(0.0, cash_available_usd - self.config.cash_buffer_usd)
+            target = min(target, spendable)
+
+        return max(0.0, target), not recognized, conviction
+
+    def _thesis_size_from_confidence(self, confidence: float) -> float:
+        thesis_min = self.config.thesis_trade_min_usd
+        thesis_max = self.config.thesis_trade_max_usd
+        if thesis_max <= thesis_min:
+            return thesis_min
+        t = (confidence - 0.5) / 0.49
+        t = min(1.0, max(0.0, t))
+        return thesis_min + t * (thesis_max - thesis_min)
+
+    @staticmethod
+    def _buy_reason(conviction: BuyConviction | None, normalized_trade: float) -> str:
+        if conviction == BuyConviction.THESIS:
+            return f"thesis_sized_{int(round(normalized_trade))}"
+        if conviction == BuyConviction.RELOAD:
+            return "reload_sized"
+        return "standard_sized"
 
     def _tweet_already_traded(self, source_tweet_id: str, db: Session) -> bool:
         existing = db.execute(

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
+from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.text_normalize import extract_action_snippet
 
@@ -77,8 +78,11 @@ class RuleBasedSignalParser:
         confidence = min(0.99, 0.45 + (score * 0.12))
 
         sell_fraction = None
+        buy_conviction = None
         if action == SignalAction.SELL:
             sell_fraction = infer_sell_fraction(raw_text, default_fraction=self.default_sell_fraction)
+        elif action == SignalAction.BUY:
+            buy_conviction = infer_buy_conviction(raw_text)
 
         return TradeSignal(
             source_tweet_id=source_tweet_id,
@@ -90,6 +94,7 @@ class RuleBasedSignalParser:
             raw_text=raw_text,
             suggested_trade_usd=self.default_trade_size_usd,
             sell_fraction=sell_fraction,
+            buy_conviction=buy_conviction,
         )
 
     def _extract_ticker(self, raw_text: str, upper_text: str, known_tickers: set[str]) -> str | None:
