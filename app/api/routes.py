@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
@@ -33,6 +34,16 @@ from app.models.schemas import (
 )
 from app.services import portfolio_history
 from app.services.pnl_service import PnlService
+from app.services.tweet_query import (
+    DEFAULT_TWEET_LIMIT,
+    DEFAULT_TWEET_RANGE,
+    DEFAULT_TWEET_SIGNAL_FILTER,
+    MAX_TWEET_LIMIT,
+    TweetWindowError,
+    fetch_dashboard_tweets,
+    normalize_signal_filter,
+    resolve_tweet_window,
+)
 from app.services.trade_status import TradeStatusSync
 from app.services.worker import BotWorker
 
@@ -268,6 +279,34 @@ def create_router(
             session_end=window.get("session_end"),
         )
 
+    @router.get("/dashboard/tweets", response_model=list[DashboardTweetRead])
+    async def dashboard_tweets(
+        range_key: str = Query(default=DEFAULT_TWEET_RANGE, alias="range"),
+        since: datetime | None = Query(default=None),
+        until: datetime | None = Query(default=None),
+        limit: int = Query(default=DEFAULT_TWEET_LIMIT, ge=1, le=MAX_TWEET_LIMIT),
+        signal_filter: str = Query(default=DEFAULT_TWEET_SIGNAL_FILTER, alias="signal"),
+    ) -> list[DashboardTweetRead]:
+        try:
+            since_dt, until_dt = resolve_tweet_window(
+                range_key=range_key,
+                since=since,
+                until=until,
+                now=datetime.now(timezone.utc),
+            )
+        except TweetWindowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        with session_factory() as db:
+            rows = fetch_dashboard_tweets(
+                db,
+                since=since_dt,
+                until=until_dt,
+                limit=limit,
+                signal_filter=normalize_signal_filter(signal_filter),
+            )
+        return [_tweet_to_dashboard_read(row) for row in rows]
+
     @router.get("/dashboard/data", response_model=DashboardSnapshot)
     async def dashboard_data(
         live_only: bool = Query(default=False),
@@ -290,12 +329,6 @@ def create_router(
             pnl_service.include_simulation = original_include
 
         with session_factory() as db:
-            tweets = db.execute(
-                select(Tweet)
-                .options(selectinload(Tweet.parsed_signals))
-                .order_by(Tweet.fetched_at.desc())
-                .limit(15)
-            ).scalars().all()
             trades = db.execute(
                 select(Trade).order_by(Trade.created_at.desc()).limit(15)
             ).scalars().all()
@@ -324,7 +357,7 @@ def create_router(
             ),
             pnl=pnl,
             broker_holdings=broker_holdings,
-            recent_tweets=[_tweet_to_dashboard_read(row) for row in tweets],
+            recent_tweets=[],
             recent_trades=[TradeRead.model_validate(row) for row in trades],
             recognized_tickers=[str(ticker) for ticker in recognized],
             worker_iteration_count=snapshot.iteration_count,

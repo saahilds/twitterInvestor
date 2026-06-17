@@ -523,8 +523,33 @@
       <section class="section grid-2" aria-label="Activity">
         <div class="panel">
           <h3>Recent tweets</h3>
+          <div class="table-toolbar" id="tweetRangeToolbar">
+            <select id="tweetRange" aria-label="Tweet time range">
+              <option value="1d">1 Day</option>
+              <option value="1w" selected>1 Week</option>
+              <option value="1m">1 Month</option>
+              <option value="3m">3 Months</option>
+              <option value="ytd">YTD</option>
+              <option value="all">All</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <select id="tweetSignalFilter" aria-label="Tweet signal filter">
+              <option value="all" selected>All signals</option>
+              <option value="alerts">Trade alerts</option>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+              <option value="ignore">Ignored</option>
+            </select>
+            <span class="hint" id="tweetRangeMeta"></span>
+          </div>
+          <div class="table-toolbar" id="tweetCustomRange" style="display:none">
+            <input type="datetime-local" id="tweetSince" aria-label="Tweet range start" />
+            <span class="hint">–</span>
+            <input type="datetime-local" id="tweetUntil" aria-label="Tweet range end" />
+            <button type="button" id="tweetCustomApply">Apply</button>
+          </div>
           <ul class="feed" id="tweetFeed"></ul>
-          <p class="empty" id="tweetEmpty" style="display:none">No tweets ingested yet.</p>
+          <p class="empty" id="tweetEmpty" style="display:none">No tweets match this filter.</p>
         </div>
         <div class="panel">
           <h3>Recent trades</h3>
@@ -563,6 +588,27 @@
     let botSort = { key: null, dir: null };
     let activityTimer = null;
     let positionsTimer = null;
+    let tweetRangePreset = "1w";
+    let tweetCustomSince = null;
+    let tweetCustomUntil = null;
+    let tweetSignalFilter = "all";
+
+    const TWEET_RANGE_LABELS = {
+      "1d": "1 Day",
+      "1w": "1 Week",
+      "1m": "1 Month",
+      "3m": "3 Months",
+      ytd: "YTD",
+      all: "All",
+      custom: "Custom",
+    };
+    const TWEET_SIGNAL_LABELS = {
+      all: "All signals",
+      alerts: "Trade alerts",
+      buy: "Buy",
+      sell: "Sell",
+      ignore: "Ignored",
+    };
 
     const fmt = (n, d = 2) => (n == null ? "n/a" : Number(n).toFixed(d));
     const fmtUsd = (n) => (n == null ? "n/a" : `$${fmt(n)}`);
@@ -584,6 +630,106 @@
       if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
       if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
       return `${Math.floor(sec / 86400)}d ago`;
+    };
+    const fmtShortDate = (iso) => {
+      if (!iso) return "";
+      try {
+        return new Date(iso).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+      } catch {
+        return iso;
+      }
+    };
+    const localDatetimeToIso = (value) => {
+      if (!value) return null;
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return null;
+      return dt.toISOString();
+    };
+    const isoToLocalDatetime = (iso) => {
+      if (!iso) return "";
+      const dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return "";
+      const pad = (n) => String(n).padStart(2, "0");
+      return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    };
+    const defaultCustomTweetRange = () => {
+      const until = new Date();
+      const since = new Date(until.getTime() - 7 * 24 * 60 * 60 * 1000);
+      return { since: since.toISOString(), until: until.toISOString() };
+    };
+    const saveTweetRangeState = () => {
+      try {
+        localStorage.setItem("tweetRangePreset", tweetRangePreset);
+        localStorage.setItem("tweetSignalFilter", tweetSignalFilter);
+        if (tweetRangePreset === "custom") {
+          localStorage.setItem("tweetSince", tweetCustomSince || "");
+          localStorage.setItem("tweetUntil", tweetCustomUntil || "");
+        }
+      } catch {
+        /* ignore storage errors */
+      }
+    };
+    const loadTweetRangeState = () => {
+      try {
+        const preset = localStorage.getItem("tweetRangePreset");
+        if (preset) tweetRangePreset = preset;
+        const signal = localStorage.getItem("tweetSignalFilter");
+        if (signal) tweetSignalFilter = signal;
+        tweetCustomSince = localStorage.getItem("tweetSince") || null;
+        tweetCustomUntil = localStorage.getItem("tweetUntil") || null;
+      } catch {
+        /* ignore storage errors */
+      }
+      const select = document.getElementById("tweetRange");
+      if (select) select.value = tweetRangePreset;
+      const signalSelect = document.getElementById("tweetSignalFilter");
+      if (signalSelect) signalSelect.value = tweetSignalFilter;
+      updateTweetCustomPanel();
+    };
+    const updateTweetCustomPanel = () => {
+      const customPanel = document.getElementById("tweetCustomRange");
+      const isCustom = tweetRangePreset === "custom";
+      customPanel.style.display = isCustom ? "flex" : "none";
+      if (!isCustom) return;
+      if (!tweetCustomSince || !tweetCustomUntil) {
+        const defaults = defaultCustomTweetRange();
+        tweetCustomSince = defaults.since;
+        tweetCustomUntil = defaults.until;
+      }
+      document.getElementById("tweetSince").value = isoToLocalDatetime(tweetCustomSince);
+      document.getElementById("tweetUntil").value = isoToLocalDatetime(tweetCustomUntil);
+    };
+    const buildTweetFetchUrl = () => {
+      const signal = encodeURIComponent(tweetSignalFilter);
+      if (tweetRangePreset === "custom") {
+        const since = encodeURIComponent(tweetCustomSince || "");
+        const until = encodeURIComponent(tweetCustomUntil || "");
+        return `/dashboard/tweets?since=${since}&until=${until}&signal=${signal}`;
+      }
+      return `/dashboard/tweets?range=${encodeURIComponent(tweetRangePreset)}&signal=${signal}`;
+    };
+    const describeTweetFilters = () => {
+      const parts = [describeTweetRange()];
+      if (tweetSignalFilter !== "all") {
+        parts.push(TWEET_SIGNAL_LABELS[tweetSignalFilter] || tweetSignalFilter);
+      }
+      return parts.join(" · ");
+    };
+    const describeTweetRange = () => {
+      if (tweetRangePreset === "custom") {
+        return `${fmtShortDate(tweetCustomSince)} – ${fmtShortDate(tweetCustomUntil)}`;
+      }
+      return TWEET_RANGE_LABELS[tweetRangePreset] || tweetRangePreset;
+    };
+    const tweetTimeTitle = (t) => {
+      const posted = fmtTime(t.posted_at);
+      if (!t.fetched_at || t.fetched_at === t.posted_at) return posted;
+      return `${posted} · ingested ${fmtTime(t.fetched_at)}`;
     };
     const esc = (s) => {
       const d = document.createElement("div");
@@ -804,6 +950,14 @@
       }, 1000);
     }
 
+    async function loadTweets() {
+      const res = await fetch(buildTweetFetchUrl());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const tweets = await res.json();
+      renderTweets(tweets);
+      return tweets;
+    }
+
     async function loadActivity() {
       const liveOnly = document.getElementById("liveOnly").checked;
       const res = await fetch(
@@ -815,6 +969,7 @@
       dashboardState = { ...(dashboardState || {}), ...data };
       applyRefreshIntervals(data.health);
       renderActivity(dashboardState);
+      await loadTweets();
       activityCountdown = Math.round(ACTIVITY_MS / 1000);
       return data;
     }
@@ -885,7 +1040,7 @@
       document.getElementById("pauseBtn").disabled = h.worker_paused || !h.worker_running;
       document.getElementById("resumeBtn").disabled = !h.worker_paused;
 
-      renderTweetsAndTrades(data);
+      renderTrades(data);
       allTickers = data.recognized_tickers || [];
       document.getElementById("tickerCount").textContent = String(allTickers.length);
       renderTickerChips(document.getElementById("tickerFilter").value);
@@ -939,11 +1094,15 @@
       renderBotPnlTable();
     }
 
-    function renderTweetsAndTrades(data) {
+    function renderTweets(tweets) {
       const tweetFeed = document.getElementById("tweetFeed");
       tweetFeed.innerHTML = "";
-      document.getElementById("tweetEmpty").style.display = data.recent_tweets.length ? "none" : "block";
-      for (const t of data.recent_tweets) {
+      document.getElementById("tweetEmpty").style.display = tweets.length ? "none" : "block";
+      document.getElementById("tweetRangeMeta").textContent =
+        tweets.length
+          ? `${tweets.length} tweet${tweets.length === 1 ? "" : "s"} · ${describeTweetFilters()}`
+          : describeTweetFilters();
+      for (const t of tweets) {
         const li = document.createElement("li");
         const sig = signalBadge(t.signal_action, t.signal_ticker, t.signal_rejection_reason);
         const link = t.url
@@ -951,13 +1110,15 @@
           : "";
         li.innerHTML = `
           <div class="meta">${sig}
-            <span class="time" title="${fmtTime(t.fetched_at)}">${fmtRelative(t.fetched_at)}</span>
+            <span class="time" title="${esc(tweetTimeTitle(t))}">${fmtRelative(t.posted_at)}</span>
             ${link}
           </div>
           <div class="body">${esc(t.text)}</div>`;
         tweetFeed.appendChild(li);
       }
+    }
 
+    function renderTrades(data) {
       const tradeFeed = document.getElementById("tradeFeed");
       tradeFeed.innerHTML = "";
       document.getElementById("tradeEmpty").style.display = data.recent_trades.length ? "none" : "block";
@@ -995,6 +1156,47 @@
       }
     }
 
+    document.getElementById("tweetRange").addEventListener("change", (e) => {
+      tweetRangePreset = e.target.value;
+      saveTweetRangeState();
+      updateTweetCustomPanel();
+      if (tweetRangePreset !== "custom") {
+        loadTweets().catch((err) => {
+          const banner = document.getElementById("errorBanner");
+          banner.style.display = "block";
+          banner.textContent = `Tweet fetch failed: ${err.message}`;
+        });
+      }
+    });
+    document.getElementById("tweetSignalFilter").addEventListener("change", (e) => {
+      tweetSignalFilter = e.target.value;
+      saveTweetRangeState();
+      loadTweets().catch((err) => {
+        const banner = document.getElementById("errorBanner");
+        banner.style.display = "block";
+        banner.textContent = `Tweet fetch failed: ${err.message}`;
+      });
+    });
+    document.getElementById("tweetCustomApply").addEventListener("click", () => {
+      const sinceIso = localDatetimeToIso(document.getElementById("tweetSince").value);
+      const untilIso = localDatetimeToIso(document.getElementById("tweetUntil").value);
+      if (!sinceIso || !untilIso) {
+        alert("Enter both start and end date/time.");
+        return;
+      }
+      if (new Date(sinceIso) >= new Date(untilIso)) {
+        alert("Start must be before end.");
+        return;
+      }
+      tweetCustomSince = sinceIso;
+      tweetCustomUntil = untilIso;
+      saveTweetRangeState();
+      loadTweets().catch((err) => {
+        const banner = document.getElementById("errorBanner");
+        banner.style.display = "block";
+        banner.textContent = `Tweet fetch failed: ${err.message}`;
+      });
+    });
     document.getElementById("refreshBtn").addEventListener("click", load);
     document.getElementById("liveOnly").addEventListener("change", load);
     document.getElementById("rhTickerFilter").addEventListener("input", renderRhHoldingsTable);
@@ -1024,6 +1226,7 @@
     });
 
     initBalanceChart();
+    loadTweetRangeState();
     load();
     startCountdown();
   </script>
