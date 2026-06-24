@@ -38,6 +38,7 @@ class Tweet(Base):
 class RecognizedTicker(Base):
     __tablename__ = "recognized_tickers"
 
+    manager_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -57,6 +58,7 @@ class ParsedSignal(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     suggested_trade_usd: Mapped[float] = mapped_column(Float, default=0.0)
     rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     tweet: Mapped[Tweet] = relationship(back_populates="parsed_signals")
@@ -82,6 +84,7 @@ class Trade(Base):
     fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(512), nullable=True)
     account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

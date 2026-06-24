@@ -25,9 +25,17 @@ class PnlService:
         self.include_simulation = include_simulation
         self.quote_cache_seconds = quote_cache_seconds
 
-    def build_report(self, *, fetch_live_prices: bool = True) -> PortfolioPnlResponse:
+    def build_report(
+        self,
+        *,
+        fetch_live_prices: bool = True,
+        manager_id: str | None = None,
+    ) -> PortfolioPnlResponse:
         with self.session_factory() as db:
-            trades = db.execute(select(Trade).order_by(Trade.id.asc())).scalars().all()
+            stmt = select(Trade).order_by(Trade.id.asc())
+            if manager_id is not None:
+                stmt = stmt.where(Trade.manager_id == manager_id)
+            trades = db.execute(stmt).scalars().all()
             lots = [
                 TradeLot(
                     trade_id=trade.id,
@@ -60,6 +68,7 @@ class PnlService:
             ),
             include_simulation=self.include_simulation,
             prices_as_of="live" if fetch_live_prices else "none",
+            manager_id=manager_id,
         )
 
     @staticmethod

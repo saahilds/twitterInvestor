@@ -50,11 +50,33 @@ def map_robinhood_state(state: str | None) -> str:
 def extract_error_message(raw_response: dict[str, Any] | None) -> str | None:
     if not raw_response:
         return None
-    for key in ("error", "detail", "message"):
-        value = raw_response.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    sources: list[dict[str, Any]] = []
+    if isinstance(raw_response, dict):
+        sources.append(raw_response)
+        nested = _broker_payload(raw_response)
+        if nested is not None and nested is not raw_response:
+            sources.append(nested)
+    for source in sources:
+        for key in ("error", "detail", "message"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
     return None
+
+
+def _broker_order_id(broker: dict[str, Any] | None) -> str | None:
+    if not broker:
+        return None
+    order_id = broker.get("id") or broker.get("order_id")
+    return str(order_id) if order_id else None
+
+
+def _is_broker_error_response(broker: dict[str, Any] | None) -> bool:
+    if not broker:
+        return False
+    if _broker_order_id(broker):
+        return False
+    return extract_error_message(broker) is not None
 
 
 def enrich_broker_order_result(
@@ -70,11 +92,26 @@ def enrich_broker_order_result(
 
     broker = _broker_payload(raw)
     if broker:
+        if _is_broker_error_response(broker):
+            error_message = extract_error_message(raw) or extract_error_message(broker)
+            return result.model_copy(
+                update={
+                    "status": "failed",
+                    "order_type": str(order_type),
+                    "ask_price": ask_price,
+                    "limit_price": limit_price,
+                    "error_message": error_message,
+                }
+            )
+
         if limit_price is None:
             limit_price = _as_float(broker.get("price"))
         status = map_robinhood_state(broker.get("state"))
         fill_price = _as_float(broker.get("average_price")) or limit_price
         quantity = result.quantity if result.quantity is not None else _as_float(broker.get("quantity"))
+        error_message = result.error_message or extract_error_message(raw)
+        if error_message and status in {"submitted", "open"} and not _broker_order_id(broker):
+            status = "failed"
         return result.model_copy(
             update={
                 "status": status if not result.simulation else result.status,
@@ -83,7 +120,7 @@ def enrich_broker_order_result(
                 "limit_price": limit_price,
                 "fill_price": fill_price if status == "filled" else result.fill_price,
                 "quantity": quantity,
-                "error_message": result.error_message or extract_error_message(raw),
+                "error_message": error_message,
             }
         )
 
@@ -94,7 +131,9 @@ def enrich_broker_order_result(
         "limit_price": limit_price,
         "error_message": error_message,
     }
-    if error_message and result.status not in {"simulated", "submitted", "filled", "open"}:
+    if error_message and result.status not in {"simulated", "filled", "open"}:
+        updates["status"] = "failed"
+    elif error_message and result.status == "submitted":
         updates["status"] = "failed"
     return result.model_copy(update=updates)
 

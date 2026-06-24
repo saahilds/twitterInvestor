@@ -72,6 +72,24 @@ def test_parser_prefers_action_cashtag_over_allowlisted_thesis_symbol() -> None:
     assert signal.action == SignalAction.BUY
 
 
+def test_parser_ignores_commentary_sell() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["ASTS"])
+    signal = parser.parse(
+        "$ASTS down 8% today as people sell the launch news.",
+        source_tweet_id="commentary",
+    )
+    assert signal.action == SignalAction.IGNORE
+
+
+def test_parser_ignores_future_tense_sell() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["ASTS"])
+    signal = parser.parse(
+        "Will possibly look to sell today depending on price $ASTS",
+        source_tweet_id="future",
+    )
+    assert signal.action == SignalAction.IGNORE
+
+
 def test_parser_took_position_is_buy_not_sells_off_false_positive() -> None:
     parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"], default_trade_size_usd=1.0)
     signal = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")

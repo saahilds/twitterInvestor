@@ -30,7 +30,7 @@ def test_thesis_new_ticker_buy_sized_by_conviction(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.THESIS,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=2000.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=2000.0)
 
     assert result.allowed
     assert result.is_new_ticker
@@ -63,7 +63,7 @@ def test_thesis_buy_capped_by_cash(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.THESIS,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=300.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=300.0)
 
     assert result.allowed
     assert result.normalized_trade_usd == 300.0
@@ -71,7 +71,7 @@ def test_thesis_buy_capped_by_cash(db_session) -> None:
 
 def test_recognized_ticker_reload_uses_default_size(db_session) -> None:
     registry = RecognizedTickerRegistry()
-    registry.register("AAOI", db_session, source_tweet_id="seed")
+    registry.register("AAOI", db_session, manager_id="individual", source_tweet_id="seed")
     manager = RiskManager(
         RiskConfig(
             seed_tickers=set(),
@@ -92,7 +92,7 @@ def test_recognized_ticker_reload_uses_default_size(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.RELOAD,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=500.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=500.0)
 
     assert result.allowed
     assert not result.is_new_ticker
@@ -104,7 +104,7 @@ def test_registry_register_idempotent(db_session) -> None:
     from sqlalchemy import select
 
     registry = RecognizedTickerRegistry()
-    registry.register("NVDA", db_session, source_tweet_id="1")
-    registry.register("NVDA", db_session, source_tweet_id="2")
+    registry.register("NVDA", db_session, manager_id="individual", source_tweet_id="1")
+    registry.register("NVDA", db_session, manager_id="individual", source_tweet_id="2")
     rows = db_session.execute(select(RecognizedTicker)).scalars().all()
     assert len(rows) == 1

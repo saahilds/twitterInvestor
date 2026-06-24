@@ -5,7 +5,7 @@ import pytest
 
 from app.config.settings import Settings
 from app.models.db_models import SignalAction
-from app.services.worker import BotWorker
+from app.services.account_manager import AccountManager
 
 
 @pytest.mark.asyncio
@@ -26,18 +26,18 @@ async def test_worker_buy_uses_limit_at_ask() -> None:
         )
     )
 
-    worker = BotWorker(
+    from app.config.account_managers import AccountManagerConfig
+
+    manager = AccountManager(
+        config=AccountManagerConfig(id="individual", robinhood_account="individual"),
         settings=settings,
-        ingestion_service=MagicMock(),
-        parser=MagicMock(),
-        risk_manager=MagicMock(),
         broker=broker,
+        risk_manager=MagicMock(),
         session_factory=MagicMock(),
-        audit_logger=MagicMock(),
         logger=logging.getLogger("test"),
     )
 
-    await worker._execute_order(SignalAction.BUY, "NVDA", 1.0)
+    await manager._execute_order(SignalAction.BUY, "NVDA", 1.0)
     broker.buy_limit_at_ask.assert_awaited_once_with(ticker="NVDA", amount_usd=1.0)
     broker.buy_market.assert_not_called()
 
@@ -58,16 +58,16 @@ async def test_worker_executes_live_sell() -> None:
         )
     )
 
-    worker = BotWorker(
+    from app.config.account_managers import AccountManagerConfig
+
+    manager = AccountManager(
+        config=AccountManagerConfig(id="individual", robinhood_account="individual"),
         settings=settings,
-        ingestion_service=MagicMock(),
-        parser=MagicMock(),
-        risk_manager=MagicMock(),
         broker=broker,
+        risk_manager=MagicMock(),
         session_factory=MagicMock(),
-        audit_logger=MagicMock(),
         logger=logging.getLogger("test"),
     )
 
-    await worker._execute_order(SignalAction.SELL, "NVDA", 250.0)
-    broker.sell_market.assert_awaited_once_with(ticker="NVDA", amount_usd=250.0)
+    await manager._execute_order(SignalAction.SELL, "NVDA", 250.0, sell_quantity=5.0)
+    broker.sell_market.assert_awaited_once_with(ticker="NVDA", quantity=5.0, amount_usd=250.0)

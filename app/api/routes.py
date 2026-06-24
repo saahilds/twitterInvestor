@@ -11,9 +11,11 @@ from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config.account_managers import AccountManagerConfig, DEFAULT_MANAGER_ID, default_manager_id
 from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
 from app.execution.robinhood_broker import RobinhoodBroker
+from app.execution.robinhood_session import RobinhoodSessionManager
 from app.models.db_models import ParsedSignal, RecognizedTicker, Trade, Tweet
 from app.risk.market_hours import is_within_regular_market_hours
 from app.models.schemas import (
@@ -45,18 +47,29 @@ from app.services.tweet_query import (
     resolve_tweet_window,
 )
 from app.services.trade_status import TradeStatusSync
-from app.services.worker import BotWorker
+from app.services.worker import BotOrchestrator
 
 
 def create_router(
     session_factory: Callable[[], Session],
-    worker: BotWorker,
+    orchestrator: BotOrchestrator,
     settings: Settings,
-    trade_status_sync: TradeStatusSync | None = None,
+    manager_configs: list[AccountManagerConfig],
+    trade_status_by_manager: dict[str, TradeStatusSync],
     pnl_service: PnlService | None = None,
-    broker: object | None = None,
+    brokers_by_manager: dict[str, object] | None = None,
+    rh_session: RobinhoodSessionManager | None = None,
 ) -> APIRouter:
     router = APIRouter()
+    brokers_by_manager = brokers_by_manager or {}
+    manager_ids = [cfg.id for cfg in manager_configs]
+
+    default_manager = default_manager_id(settings, manager_configs)
+
+    def _resolve_manager_id(manager: str | None) -> str:
+        if manager and manager in manager_ids:
+            return manager
+        return default_manager
 
     def _tweet_to_dashboard_read(tweet: Tweet) -> DashboardTweetRead:
         latest = None
@@ -74,17 +87,22 @@ def create_router(
             )
         return DashboardTweetRead(**payload)
 
+    def _session_snapshot():
+        if rh_session is not None:
+            return rh_session.snapshot()
+        for broker in brokers_by_manager.values():
+            if isinstance(broker, RobinhoodBroker):
+                return broker.session_snapshot()
+        return None
+
     @router.get("/health", response_model=HealthResponse)
-    async def health() -> HealthResponse:
-        snapshot = worker.snapshot()
-        rh_logged_in = None
-        rh_error = None
-        rh_retry = None
-        if isinstance(broker, RobinhoodBroker):
-            session = broker.session_snapshot()
-            rh_logged_in = session.logged_in
-            rh_error = session.last_error
-            rh_retry = session.retry_in_seconds if session.last_error else None
+    async def health(manager: str | None = Query(default=None)) -> HealthResponse:
+        snapshot = orchestrator.snapshot()
+        active_manager = _resolve_manager_id(manager)
+        session = _session_snapshot()
+        rh_logged_in = session.logged_in if session is not None else None
+        rh_error = session.last_error if session is not None else None
+        rh_retry = session.retry_in_seconds if session is not None and session.last_error else None
         return HealthResponse(
             worker_running=snapshot.running,
             worker_paused=snapshot.paused,
@@ -100,6 +118,8 @@ def create_router(
             robinhood_logged_in=rh_logged_in,
             robinhood_auth_error=rh_error,
             robinhood_auth_retry_in_seconds=rh_retry,
+            managers=snapshot.managers,
+            active_manager=active_manager,
         )
 
     @router.get("/tweets", response_model=list[TweetRead])
@@ -111,18 +131,32 @@ def create_router(
         return [TweetRead.model_validate(row) for row in rows]
 
     @router.get("/signals", response_model=list[ParsedSignalRead])
-    async def list_signals(limit: int = Query(default=50, ge=1, le=200)) -> list[ParsedSignalRead]:
+    async def list_signals(
+        limit: int = Query(default=50, ge=1, le=200),
+        manager: str | None = Query(default=None),
+    ) -> list[ParsedSignalRead]:
+        manager_id = _resolve_manager_id(manager)
         with session_factory() as db:
             rows = db.execute(
-                select(ParsedSignal).order_by(ParsedSignal.created_at.desc()).limit(limit)
+                select(ParsedSignal)
+                .where(ParsedSignal.manager_id == manager_id)
+                .order_by(ParsedSignal.created_at.desc())
+                .limit(limit)
             ).scalars().all()
         return [ParsedSignalRead.model_validate(row) for row in rows]
 
     @router.get("/trades", response_model=list[TradeRead])
-    async def list_trades(limit: int = Query(default=50, ge=1, le=200)) -> list[TradeRead]:
+    async def list_trades(
+        limit: int = Query(default=50, ge=1, le=200),
+        manager: str | None = Query(default=None),
+    ) -> list[TradeRead]:
+        manager_id = _resolve_manager_id(manager)
         with session_factory() as db:
             rows = db.execute(
-                select(Trade).order_by(Trade.created_at.desc()).limit(limit)
+                select(Trade)
+                .where(Trade.manager_id == manager_id)
+                .order_by(Trade.created_at.desc())
+                .limit(limit)
             ).scalars().all()
         return [TradeRead.model_validate(row) for row in rows]
 
@@ -136,12 +170,13 @@ def create_router(
 
     @router.post("/trades/{trade_id}/refresh", response_model=TradeRead)
     async def refresh_trade(trade_id: int) -> TradeRead:
-        if trade_status_sync is None:
-            raise HTTPException(status_code=400, detail="trade_refresh_requires_robinhood_broker")
         with session_factory() as db:
             trade = db.get(Trade, trade_id)
             if trade is None:
                 raise HTTPException(status_code=404, detail="trade_not_found")
+            trade_status_sync = trade_status_by_manager.get(trade.manager_id)
+            if trade_status_sync is None:
+                raise HTTPException(status_code=400, detail="trade_refresh_requires_robinhood_broker")
             if trade.simulation:
                 raise HTTPException(status_code=400, detail="cannot_refresh_simulated_trade")
             if not trade.broker_order_id:
@@ -155,26 +190,38 @@ def create_router(
     async def portfolio_pnl(
         live_only: bool = Query(default=False),
         no_live_prices: bool = Query(default=False),
+        manager: str | None = Query(default=None),
     ) -> PortfolioPnlResponse:
         if pnl_service is None:
             raise HTTPException(status_code=503, detail="pnl_service_unavailable")
+        manager_id = _resolve_manager_id(manager)
         include_simulation = settings.pnl_include_simulation and not live_only
         original_include = pnl_service.include_simulation
         pnl_service.include_simulation = include_simulation
         try:
-            return pnl_service.build_report(fetch_live_prices=not no_live_prices)
+            return pnl_service.build_report(
+                fetch_live_prices=not no_live_prices,
+                manager_id=manager_id,
+            )
         finally:
             pnl_service.include_simulation = original_include
 
-    async def _fetch_broker_holdings(*, record_snapshot: bool = True) -> BrokerHoldingsSnapshot:
+    async def _fetch_broker_holdings(
+        *,
+        manager_id: str,
+        record_snapshot: bool = True,
+    ) -> BrokerHoldingsSnapshot:
         if not settings.robinhood_username or not settings.robinhood_password:
             return BrokerHoldingsSnapshot(
                 available=False,
+                manager_id=manager_id,
                 error="robinhood_credentials_missing",
             )
+        broker = brokers_by_manager.get(manager_id)
         if not isinstance(broker, RobinhoodBroker):
             return BrokerHoldingsSnapshot(
                 available=False,
+                manager_id=manager_id,
                 error="broker_not_robinhood",
             )
 
@@ -183,6 +230,7 @@ def create_router(
             return BrokerHoldingsSnapshot(
                 available=False,
                 account_number=broker._account_number,
+                manager_id=manager_id,
                 error=holdings_error,
             )
 
@@ -225,6 +273,7 @@ def create_router(
         return BrokerHoldingsSnapshot(
             available=True,
             account_number=broker._account_number,
+            manager_id=manager_id,
             holdings=rows,
             portfolio_equity=round(portfolio_equity, 2) if portfolio_equity is not None else None,
             holdings_market_value=round(holdings_market, 2) if holdings_market is not None else None,
@@ -242,13 +291,19 @@ def create_router(
     async def dashboard_chart(
         range_key: str = Query(default="1w", alias="range"),
         live_only: bool = Query(default=False),
+        manager: str | None = Query(default=None),
     ) -> PortfolioChartResponse:
         range_key = range_key if range_key in portfolio_history.RANGE_KEYS else "1w"
+        manager_id = _resolve_manager_id(manager)
         current_value: float | None = None
         account_number: str | None = None
 
+        broker = brokers_by_manager.get(manager_id)
         if isinstance(broker, RobinhoodBroker):
-            broker_holdings = await _fetch_broker_holdings(record_snapshot=False)
+            broker_holdings = await _fetch_broker_holdings(
+                manager_id=manager_id,
+                record_snapshot=False,
+            )
             if broker_holdings.available:
                 current_value = broker_holdings.stocks_plus_cash
                 account_number = broker_holdings.account_number
@@ -265,6 +320,7 @@ def create_router(
                 current_value=current_value,
                 live_trades_only=live_only,
                 ytd_baseline_usd=settings.chart_ytd_baseline_usd,
+                manager_id=manager_id,
             )
 
         return PortfolioChartResponse(
@@ -312,11 +368,13 @@ def create_router(
         live_only: bool = Query(default=False),
         include_broker: bool = Query(default=True),
         fetch_live_pnl_prices: bool | None = Query(default=None),
+        manager: str | None = Query(default=None),
     ) -> DashboardSnapshot:
         if pnl_service is None:
             raise HTTPException(status_code=503, detail="pnl_service_unavailable")
 
-        snapshot = worker.snapshot()
+        manager_id = _resolve_manager_id(manager)
+        snapshot = orchestrator.snapshot()
         use_live_pnl_prices = (
             fetch_live_pnl_prices if fetch_live_pnl_prices is not None else include_broker
         )
@@ -324,23 +382,36 @@ def create_router(
         original_include = pnl_service.include_simulation
         pnl_service.include_simulation = include_simulation
         try:
-            pnl = pnl_service.build_report(fetch_live_prices=use_live_pnl_prices)
+            pnl = pnl_service.build_report(
+                fetch_live_prices=use_live_pnl_prices,
+                manager_id=manager_id,
+            )
         finally:
             pnl_service.include_simulation = original_include
 
         with session_factory() as db:
             trades = db.execute(
-                select(Trade).order_by(Trade.created_at.desc()).limit(15)
+                select(Trade)
+                .where(Trade.manager_id == manager_id)
+                .order_by(Trade.created_at.desc())
+                .limit(15)
             ).scalars().all()
             recognized = db.execute(
-                select(RecognizedTicker.ticker).order_by(RecognizedTicker.ticker.asc())
+                select(RecognizedTicker.ticker)
+                .where(RecognizedTicker.manager_id == manager_id)
+                .order_by(RecognizedTicker.ticker.asc())
             ).scalars().all()
 
         if include_broker:
-            broker_holdings = await _fetch_broker_holdings()
+            broker_holdings = await _fetch_broker_holdings(manager_id=manager_id)
         else:
-            broker_holdings = BrokerHoldingsSnapshot(available=False, error="positions_refresh_skipped")
+            broker_holdings = BrokerHoldingsSnapshot(
+                available=False,
+                manager_id=manager_id,
+                error="positions_refresh_skipped",
+            )
 
+        session = _session_snapshot()
         return DashboardSnapshot(
             health=HealthResponse(
                 worker_running=snapshot.running,
@@ -354,6 +425,13 @@ def create_router(
                 poll_interval_seconds=settings.poll_interval_seconds,
                 dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
                 default_trade_size_usd=settings.default_trade_size_usd,
+                robinhood_logged_in=session.logged_in if session is not None else None,
+                robinhood_auth_error=session.last_error if session is not None else None,
+                robinhood_auth_retry_in_seconds=(
+                    session.retry_in_seconds if session is not None and session.last_error else None
+                ),
+                managers=snapshot.managers,
+                active_manager=manager_id,
             ),
             pnl=pnl,
             broker_holdings=broker_holdings,
@@ -362,11 +440,13 @@ def create_router(
             recognized_tickers=[str(ticker) for ticker in recognized],
             worker_iteration_count=snapshot.iteration_count,
             worker_last_error=snapshot.last_error,
+            active_manager=manager_id,
+            managers=snapshot.managers,
         )
 
     @router.get("/broker/holdings", response_model=BrokerHoldingsSnapshot)
-    async def broker_holdings() -> BrokerHoldingsSnapshot:
-        return await _fetch_broker_holdings()
+    async def broker_holdings(manager: str | None = Query(default=None)) -> BrokerHoldingsSnapshot:
+        return await _fetch_broker_holdings(manager_id=_resolve_manager_id(manager))
 
     @router.get("/dashboard")
     async def dashboard() -> FileResponse:
@@ -379,23 +459,25 @@ def create_router(
         return FileResponse(js_path, media_type="application/javascript")
 
     @router.post("/pause", response_model=WorkerControlResponse)
-    async def pause_worker() -> WorkerControlResponse:
-        worker.pause()
-        snapshot = worker.snapshot()
+    async def pause_worker(manager: str | None = Query(default=None)) -> WorkerControlResponse:
+        orchestrator.pause(manager)
+        snapshot = orchestrator.snapshot()
+        label = manager or "all"
         return WorkerControlResponse(
             running=snapshot.running,
             paused=snapshot.paused,
-            message="worker paused",
+            message=f"worker paused ({label})",
         )
 
     @router.post("/resume", response_model=WorkerControlResponse)
-    async def resume_worker() -> WorkerControlResponse:
-        worker.resume()
-        snapshot = worker.snapshot()
+    async def resume_worker(manager: str | None = Query(default=None)) -> WorkerControlResponse:
+        orchestrator.resume(manager)
+        snapshot = orchestrator.snapshot()
+        label = manager or "all"
         return WorkerControlResponse(
             running=snapshot.running,
             paused=snapshot.paused,
-            message="worker resumed",
+            message=f"worker resumed ({label})",
         )
 
     return router

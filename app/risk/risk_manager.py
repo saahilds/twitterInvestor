@@ -11,7 +11,7 @@ from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import RiskCheckResult, TradeSignal
 from app.parsing.buy_conviction import BuyConviction
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
-from app.risk.sell_sizing import resolve_sell_notional_usd
+from app.risk.sell_sizing import resolve_sell_order
 from app.services.recognized_tickers import RecognizedTickerRegistry
 
 
@@ -52,6 +52,7 @@ class RiskManager:
         signal: TradeSignal,
         db: Session,
         *,
+        manager_id: str,
         cash_available_usd: float | None = None,
         holding: BrokerHolding | None = None,
     ) -> RiskCheckResult:
@@ -62,7 +63,9 @@ class RiskManager:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
 
         ticker = signal.ticker.upper()
-        recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(ticker, db)
+        recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(
+            ticker, db, manager_id=manager_id
+        )
 
         if (
             signal.action == SignalAction.BUY
@@ -78,6 +81,7 @@ class RiskManager:
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
 
         sell_fraction: float | None = None
+        sell_quantity: float | None = None
         buy_conviction: BuyConviction | None = None
         if signal.action == SignalAction.SELL:
             if holding is None or holding.quantity <= 0:
@@ -85,14 +89,16 @@ class RiskManager:
             sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
             if sell_fraction <= 0:
                 return RiskCheckResult(allowed=False, reason="sell_fraction_zero")
-            normalized_trade = resolve_sell_notional_usd(
+            sell_order = resolve_sell_order(
                 holding,
                 sell_fraction,
                 max_trade_size_usd=self.config.max_trade_size_usd,
                 min_trade_notional_usd=self.config.min_sell_notional_usd,
             )
-            if normalized_trade is None or normalized_trade <= 0:
+            if sell_order is None or sell_order.amount_usd <= 0:
                 return RiskCheckResult(allowed=False, reason="invalid_sell_size")
+            normalized_trade = sell_order.amount_usd
+            sell_quantity = sell_order.quantity
             is_new_ticker = False
         else:
             if self.config.live_trading_enabled and cash_available_usd is None:
@@ -106,10 +112,10 @@ class RiskManager:
             if normalized_trade <= 0 or normalized_trade < self.config.min_buy_notional_usd:
                 return RiskCheckResult(allowed=False, reason="insufficient_cash")
 
-        if self._tweet_already_traded(signal.source_tweet_id, db):
+        if self._tweet_already_traded(signal.source_tweet_id, db, manager_id=manager_id):
             return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}")
 
-        if self._daily_ticker_limit_reached(ticker, db):
+        if self._daily_ticker_limit_reached(ticker, db, manager_id=manager_id):
             return RiskCheckResult(allowed=False, reason=f"daily_limit:{ticker}")
 
         now = datetime.now(timezone.utc)
@@ -117,7 +123,13 @@ class RiskManager:
         cooldown_cutoff = now - timedelta(seconds=self.config.cooldown_seconds)
         recent_trade = db.execute(
             select(Trade)
-            .where(and_(Trade.ticker == ticker, Trade.created_at >= cooldown_cutoff))
+            .where(
+                and_(
+                    Trade.ticker == ticker,
+                    Trade.manager_id == manager_id,
+                    Trade.created_at >= cooldown_cutoff,
+                )
+            )
             .order_by(Trade.created_at.desc())
             .limit(1)
         ).scalar_one_or_none()
@@ -131,6 +143,7 @@ class RiskManager:
                 and_(
                     ParsedSignal.ticker == ticker,
                     ParsedSignal.action == signal.action,
+                    ParsedSignal.manager_id == manager_id,
                     ParsedSignal.created_at >= duplicate_cutoff,
                 )
             )
@@ -151,6 +164,7 @@ class RiskManager:
             normalized_trade_usd=round(normalized_trade, 2),
             is_new_ticker=is_new_ticker,
             sell_fraction=sell_fraction,
+            sell_quantity=sell_quantity,
         )
 
     def _resolve_trade_size(
@@ -194,22 +208,31 @@ class RiskManager:
             return "reload_sized"
         return "standard_sized"
 
-    def _tweet_already_traded(self, source_tweet_id: str, db: Session) -> bool:
+    def _tweet_already_traded(self, source_tweet_id: str, db: Session, *, manager_id: str) -> bool:
         existing = db.execute(
             select(Trade.id)
             .join(ParsedSignal, Trade.parsed_signal_id == ParsedSignal.id)
-            .where(ParsedSignal.source_tweet_id == source_tweet_id)
+            .where(
+                and_(
+                    ParsedSignal.source_tweet_id == source_tweet_id,
+                    Trade.manager_id == manager_id,
+                )
+            )
             .limit(1)
         ).scalar_one_or_none()
         return existing is not None
 
-    def _daily_ticker_limit_reached(self, ticker: str, db: Session) -> bool:
+    def _daily_ticker_limit_reached(self, ticker: str, db: Session, *, manager_id: str) -> bool:
         if self.config.max_trades_per_ticker_per_day <= 0:
             return False
 
         day_start = us_trading_day_start_utc()
         query = select(Trade.id).where(
-            and_(Trade.ticker == ticker, Trade.created_at >= day_start)
+            and_(
+                Trade.ticker == ticker,
+                Trade.manager_id == manager_id,
+                Trade.created_at >= day_start,
+            )
         )
         if not self.config.daily_limit_counts_simulation:
             query = query.where(Trade.simulation.is_(False))
