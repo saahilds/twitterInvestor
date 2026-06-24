@@ -336,6 +336,7 @@ def trade_annotations(
     start: datetime | None,
     end: datetime,
     live_trades_only: bool,
+    manager_id: str | None = None,
 ) -> list[Trade]:
     end_utc = _as_utc(end)
     start_utc = _as_utc(start) if start is not None else None
@@ -344,6 +345,8 @@ def trade_annotations(
         stmt = stmt.where(Trade.created_at >= start)
     if live_trades_only:
         stmt = stmt.where(Trade.simulation.is_(False))
+    if manager_id is not None:
+        stmt = stmt.where(Trade.manager_id == manager_id)
 
     rows = db.execute(stmt).scalars().all()
     return [row for row in rows if is_executed_trade(row)]
@@ -403,6 +406,7 @@ def build_chart_series(
     current_value: float | None,
     live_trades_only: bool,
     ytd_baseline_usd: float = DEFAULT_YTD_BASELINE_USD,
+    manager_id: str | None = None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], str, dict[str, str | None], dict[str, float]]:
     """Chart values are measured ``stocks_plus_cash`` during 7am–8pm ET (extended session)."""
     if range_key not in RANGE_KEYS:
@@ -445,7 +449,13 @@ def build_chart_series(
     source = _series_source(series, live_value=live_value)
     points = [{"t": moment.isoformat(), "v": round(value, 2)} for moment, value in series]
 
-    trades = trade_annotations(db, start=start, end=now, live_trades_only=live_trades_only)
+    trades = trade_annotations(
+        db,
+        start=start,
+        end=now,
+        live_trades_only=live_trades_only,
+        manager_id=manager_id,
+    )
     annotations = build_trade_annotation_dicts(
         trades,
         window=chart_window,

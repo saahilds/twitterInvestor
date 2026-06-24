@@ -143,18 +143,11 @@
     return best;
   }
 
-  function buildMarkers(annotations, rangeKey, seriesData) {
-    return (annotations || []).map((trade) => {
-      const isBuy = trade.action === "BUY";
-      const time = snapMarkerTime(toMarkerTime(trade.t, rangeKey), seriesData, rangeKey);
-      return {
-        time,
-        position: isBuy ? "belowBar" : "aboveBar",
-        color: isBuy ? COLORS.up : COLORS.down,
-        shape: isBuy ? "arrowUp" : "arrowDown",
-        text: trade.ticker,
-      };
-    });
+  function valueAtSeriesTime(seriesData, markerTime, rangeKey) {
+    if (!seriesData.length) return null;
+    const snapped = snapMarkerTime(markerTime, seriesData, rangeKey);
+    const point = seriesData.find((p) => p.time === snapped);
+    return point?.value ?? null;
   }
 
   function visibleRangeFromWindow(payload, rangeKey) {
@@ -173,6 +166,8 @@
     };
   }
 
+  const AXIS_BAND_PX = 52;
+
   class BalanceChart {
     constructor(rootEl, options = {}) {
       if (!rootEl) throw new Error("BalanceChart: root element required");
@@ -188,10 +183,11 @@
       this.metaEl = null;
       this.chartEl = null;
       this.overlayEl = null;
+      this.annotationGutterEl = null;
       this.chart = null;
       this.series = null;
-      this.seriesMarkers = null;
       this.tradeAnnotations = [];
+      this.seriesData = [];
       this.resizeObserver = null;
       this._visibleRangeHandler = null;
       this._buildDom();
@@ -212,11 +208,12 @@
           <span class="buy">Buy</span>
           <span class="sell">Sell</span>
         </div>
+        <div class="balance-chart-meta" data-chart-meta></div>
         <div class="balance-chart-canvas" data-chart-canvas>
+          <div class="balance-annotation-gutter" data-annotation-gutter></div>
           <div class="balance-lwc-mount" data-lwc-mount></div>
           <div class="balance-trade-overlay" data-trade-overlay></div>
         </div>
-        <div class="balance-chart-meta" data-chart-meta></div>
         <div class="range-group balance-range-group" data-range-group>
           <button type="button" class="range-btn" data-range="1d">1D</button>
           <button type="button" class="range-btn" data-range="1w">1W</button>
@@ -233,6 +230,7 @@
       this.metaEl = this.root.querySelector("[data-chart-meta]");
       this.chartEl = this.root.querySelector("[data-chart-canvas]");
       this.lwcMount = this.root.querySelector("[data-lwc-mount]");
+      this.annotationGutterEl = this.root.querySelector("[data-annotation-gutter]");
       this.overlayEl = this.root.querySelector("[data-trade-overlay]");
       const rangeGroup = this.root.querySelector("[data-range-group]");
       rangeGroup.addEventListener("click", (e) => {
@@ -251,14 +249,16 @@
       }
       const mount = this.lwcMount || this.chartEl;
       const width = this.chartEl.clientWidth || 600;
+      const chartHeight = Math.max(200, (this.lwcMount?.clientHeight || 264));
       this.chart = LWC.createChart(mount, {
         width,
-        height: 300,
+        height: chartHeight,
         layout: {
           background: { color: "transparent" },
           textColor: COLORS.text,
           fontFamily: "system-ui, sans-serif",
           fontSize: 11,
+          attributionLogo: false,
         },
         grid: {
           vertLines: { color: COLORS.grid, visible: false },
@@ -272,10 +272,16 @@
           secondsVisible: false,
           fixLeftEdge: true,
           fixRightEdge: true,
+          minimumHeight: AXIS_BAND_PX,
         },
         crosshair: {
           mode: LWC.CrosshairMode ? LWC.CrosshairMode.Magnet : 1,
-          vertLine: { color: COLORS.crosshair, width: 1, style: 2 },
+          vertLine: {
+            color: COLORS.crosshair,
+            width: 1,
+            style: 2,
+            labelVisible: false,
+          },
           horzLine: { visible: false },
         },
         handleScroll: false,
@@ -288,6 +294,7 @@
         lastValueVisible: false,
         crosshairMarkerVisible: true,
         crosshairMarkerRadius: 4,
+        scaleMargins: { top: 0.1, bottom: 0.22 },
       };
       if (typeof this.chart.addAreaSeries === "function") {
         this.series = this.chart.addAreaSeries(seriesOptions);
@@ -295,10 +302,6 @@
         this.series = this.chart.addSeries(LWC.AreaSeries, seriesOptions);
       } else {
         this.series = this.chart.addLineSeries(seriesOptions);
-      }
-
-      if (typeof LWC.createSeriesMarkers === "function") {
-        this.seriesMarkers = LWC.createSeriesMarkers(this.series, []);
       }
 
       this.chart.subscribeCrosshairMove((param) => this._onCrosshairMove(param));
@@ -309,29 +312,30 @@
 
       this.resizeObserver = new ResizeObserver(() => {
         if (!this.chart || !this.chartEl) return;
-        this.chart.applyOptions({ width: this.chartEl.clientWidth });
+        const width = this.chartEl.clientWidth;
+        const chartHeight = Math.max(200, this.lwcMount?.clientHeight || 264);
+        this.chart.applyOptions({ width, height: chartHeight });
         this._renderTradeOverlay();
       });
       this.resizeObserver.observe(this.chartEl);
     }
 
-    _setSeriesMarkers(markers) {
-      if (this.seriesMarkers) {
-        this.seriesMarkers.setMarkers(markers);
-        return;
-      }
-      if (this.series && typeof this.series.setMarkers === "function") {
-        this.series.setMarkers(markers);
-      }
+    _axisBandPx() {
+      return AXIS_BAND_PX;
     }
 
     _renderTradeOverlay() {
       if (!this.overlayEl || !this.chart) return;
       this.overlayEl.innerHTML = "";
+      if (this.annotationGutterEl) {
+        this.annotationGutterEl.innerHTML = "";
+      }
       if (!this.tradeAnnotations.length) return;
 
       const timeScale = this.chart.timeScale();
       const chartWidth = this.chartEl.clientWidth;
+      const labelHost = this.annotationGutterEl || this.overlayEl;
+      const placedLabels = [];
 
       for (const trade of this.tradeAnnotations) {
         const time = toMarkerTime(trade.t, this.rangeKey);
@@ -340,17 +344,39 @@
 
         const isBuy = trade.action === "BUY";
         const side = isBuy ? "buy" : "sell";
+        const value = valueAtSeriesTime(this.seriesData, time, this.rangeKey);
+        const y = value != null && this.series ? this.series.priceToCoordinate(value) : null;
 
         const line = document.createElement("div");
         line.className = `balance-trade-line ${side}`;
         line.style.left = `${x}px`;
+        line.style.bottom = `${this._axisBandPx()}px`;
         this.overlayEl.appendChild(line);
+
+        if (y != null) {
+          const dot = document.createElement("div");
+          dot.className = `balance-trade-dot ${side}`;
+          dot.style.left = `${x}px`;
+          dot.style.top = `${y}px`;
+          this.overlayEl.appendChild(dot);
+        }
 
         const label = document.createElement("div");
         label.className = `balance-trade-label ${side}`;
         label.style.left = `${x}px`;
         label.textContent = trade.label || `${trade.action} ${trade.ticker}`;
-        this.overlayEl.appendChild(label);
+
+        let row = 0;
+        const minGap = 64;
+        while (placedLabels.some((p) => p.row === row && Math.abs(p.x - x) < minGap)) {
+          row += 1;
+        }
+        placedLabels.push({ x, row });
+        if (row > 0) {
+          label.style.top = `${6 + row * 14}px`;
+        }
+
+        labelHost.appendChild(label);
       }
     }
 
@@ -442,7 +468,7 @@
 
       if (!payload.points || !payload.points.length) {
         this.series.setData([]);
-        this._setSeriesMarkers([]);
+        this.seriesData = [];
         this._renderTradeOverlay();
         this._renderHero(
           payload.summary || {
@@ -462,10 +488,8 @@
       }
 
       const data = toSeriesPoints(payload.points, rangeKey);
+      this.seriesData = data;
       this.series.setData(data);
-
-      const markers = buildMarkers(this.tradeAnnotations, rangeKey, data);
-      this._setSeriesMarkers(markers);
 
       const visible = visibleRangeFromWindow(payload, rangeKey);
       if (visible) {
@@ -484,13 +508,9 @@
       if (this.chart && this._visibleRangeHandler) {
         this.chart.timeScale().unsubscribeVisibleLogicalRangeChange(this._visibleRangeHandler);
       }
-      if (this.seriesMarkers && typeof this.seriesMarkers.detach === "function") {
-        this.seriesMarkers.detach();
-      }
       if (this.chart) this.chart.remove();
       this.chart = null;
       this.series = null;
-      this.seriesMarkers = null;
     }
   }
 

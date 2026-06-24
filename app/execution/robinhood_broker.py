@@ -36,17 +36,21 @@ class RobinhoodBroker:
         settings: Settings,
         logger: logging.Logger,
         session_manager: RobinhoodSessionManager | None = None,
+        account_selector: str | None = None,
     ) -> None:
         self.settings = settings
         self.logger = logger
         self._session = session_manager or RobinhoodSessionManager(settings=settings, logger=logger)
+        self._account_selector = account_selector if account_selector is not None else settings.robinhood_account
         self._account_number: str | None = None
 
     async def buy_market(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
-        return await self._place_order("buy", ticker, amount_usd)
+        return await self._place_order("buy", ticker, amount_usd=amount_usd)
 
-    async def sell_market(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
-        return await self._place_order("sell", ticker, amount_usd)
+    async def sell_market(
+        self, ticker: str, quantity: float, *, amount_usd: float | None = None
+    ) -> BrokerOrderResult:
+        return await self._place_order("sell", ticker, quantity=quantity, amount_usd=amount_usd)
 
     async def buy_limit_at_ask(self, ticker: str, amount_usd: float) -> BrokerOrderResult:
         if not self.settings.live_trading_enabled:
@@ -158,6 +162,17 @@ class RobinhoodBroker:
             return [], login_error
         return fetch_robinhood_holdings(self._account_number)
 
+    def get_holding(self, ticker: str) -> tuple[BrokerHolding | None, str | None]:
+        """Return the current open position for one ticker from Robinhood."""
+        holdings, error = self.get_holdings()
+        if error:
+            return None, error
+        symbol = ticker.upper()
+        for row in holdings:
+            if row.ticker == symbol:
+                return row, None
+        return None, None
+
     def get_portfolio_metrics(self) -> BrokerPortfolioMetrics:
         if rh is None:
             return BrokerPortfolioMetrics(None, None, None, None, None)
@@ -166,13 +181,60 @@ class RobinhoodBroker:
             return BrokerPortfolioMetrics(None, None, None, None, None)
         return fetch_portfolio_metrics(self._account_number)
 
-    async def _place_order(self, side: str, ticker: str, amount_usd: float) -> BrokerOrderResult:
+    async def _place_order(
+        self,
+        side: str,
+        ticker: str,
+        *,
+        amount_usd: float | None = None,
+        quantity: float | None = None,
+    ) -> BrokerOrderResult:
+        mode = "fractional_market_quantity" if side == "sell" else "fractional_market"
+
+        if side == "sell":
+            if quantity is None or quantity <= 0:
+                return enrich_broker_order_result(
+                    BrokerOrderResult(
+                        status="failed",
+                        simulation=False,
+                        raw_response={
+                            "error": "missing_sell_quantity",
+                            "ticker": ticker,
+                            "order_type": mode,
+                        },
+                    ),
+                    order_execution_mode=mode,
+                )
+        elif amount_usd is None or amount_usd <= 0:
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="failed",
+                    simulation=False,
+                    raw_response={
+                        "error": "missing_buy_amount",
+                        "ticker": ticker,
+                        "order_type": mode,
+                    },
+                ),
+                order_execution_mode=mode,
+            )
+
         if not self.settings.live_trading_enabled:
-            return BrokerOrderResult(
-                status="simulated",
-                order_id=f"sim-{uuid.uuid4().hex[:12]}",
-                simulation=True,
-                raw_response={"side": side, "ticker": ticker, "amount_usd": amount_usd},
+            return enrich_broker_order_result(
+                BrokerOrderResult(
+                    status="simulated",
+                    order_id=f"sim-{uuid.uuid4().hex[:12]}",
+                    simulation=True,
+                    quantity=quantity,
+                    raw_response={
+                        "side": side,
+                        "ticker": ticker,
+                        "amount_usd": amount_usd,
+                        "quantity": quantity,
+                        "order_type": mode,
+                    },
+                ),
+                order_execution_mode=mode,
             )
 
         if rh is None:
@@ -187,20 +249,24 @@ class RobinhoodBroker:
             return BrokerOrderResult(status="failed", simulation=False, raw_response={"error": login_error})
 
         try:
-            response = await asyncio.to_thread(self._submit_order, side, ticker, amount_usd)
+            if side == "sell":
+                response = await asyncio.to_thread(self._submit_sell_order, ticker, quantity)
+            else:
+                response = await asyncio.to_thread(self._submit_buy_order, ticker, amount_usd)
             order_id = response.get("id") if isinstance(response, dict) else None
-            mode = "fractional_market"
             return enrich_broker_order_result(
                 BrokerOrderResult(
                     status="submitted",
                     order_id=order_id,
                     simulation=False,
+                    quantity=quantity,
                     account_number=self._account_number,
                     raw_response={
                         "order_type": mode,
                         "side": side,
                         "ticker": ticker,
                         "amount_usd": amount_usd,
+                        "quantity": quantity,
                         "broker_response": response if isinstance(response, dict) else {"raw": str(response)},
                     },
                 ),
@@ -212,9 +278,15 @@ class RobinhoodBroker:
                 BrokerOrderResult(
                     status="failed",
                     simulation=False,
-                    raw_response={"error": str(exc), "ticker": ticker, "side": side, "order_type": "fractional_market"},
+                    raw_response={
+                        "error": str(exc),
+                        "ticker": ticker,
+                        "side": side,
+                        "order_type": mode,
+                        "quantity": quantity,
+                    },
                 ),
-                order_execution_mode="fractional_market",
+                order_execution_mode=mode,
             )
 
     async def verify_login(self) -> dict:
@@ -294,7 +366,7 @@ class RobinhoodBroker:
         return {
             "username": username,
             "account_number": self._account_number,
-            "robinhood_account": self.settings.robinhood_account,
+            "robinhood_account": self._account_selector,
             "selected_account": selected,
             "available_accounts": [summarize_account(account) for account in accounts],
         }
@@ -305,7 +377,7 @@ class RobinhoodBroker:
             return login_error
         try:
             self._account_number = resolve_account_number(
-                self.settings.robinhood_account,
+                self._account_selector,
                 load_all_accounts(),
             )
         except ValueError as exc:
@@ -398,22 +470,24 @@ class RobinhoodBroker:
 
         raise ValueError(f"ask_price_unavailable:{symbol}")
 
-    @staticmethod
-    def _submit_order(side: str, ticker: str, amount_usd: float) -> dict:
-        if side == "buy":
-            response = rh.orders.order_buy_fractional_by_price(
-                symbol=ticker,
-                amountInDollars=amount_usd,
-                account_number=self._account_number,
-                timeInForce="gfd",
-            )
-        else:
-            response = rh.orders.order_sell_fractional_by_price(
-                symbol=ticker,
-                amountInDollars=amount_usd,
-                account_number=self._account_number,
-                timeInForce="gfd",
-            )
+    def _submit_buy_order(self, ticker: str, amount_usd: float) -> dict:
+        response = rh.orders.order_buy_fractional_by_price(
+            symbol=ticker,
+            amountInDollars=amount_usd,
+            account_number=self._account_number,
+            timeInForce="gfd",
+        )
+        if isinstance(response, dict):
+            return response
+        return {"response": response}
+
+    def _submit_sell_order(self, ticker: str, quantity: float) -> dict:
+        response = rh.orders.order_sell_fractional_by_quantity(
+            symbol=ticker,
+            quantity=quantity,
+            account_number=self._account_number,
+            timeInForce="gfd",
+        )
         if isinstance(response, dict):
             return response
         return {"response": response}

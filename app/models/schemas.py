@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.models.db_models import SignalAction
 from app.parsing.buy_conviction import BuyConviction
@@ -38,6 +38,7 @@ class RiskCheckResult(BaseModel):
     normalized_trade_usd: float | None = None
     is_new_ticker: bool = False
     sell_fraction: float | None = None
+    sell_quantity: float | None = None
 
 
 class BrokerOrderResult(BaseModel):
@@ -80,6 +81,7 @@ class ParsedSignalRead(BaseModel):
     score: int
     suggested_trade_usd: float
     rejection_reason: str | None
+    manager_id: str
     created_at: datetime
 
 
@@ -102,6 +104,7 @@ class TradeRead(BaseModel):
     fill_price: float | None
     error_message: str | None
     account_number: str | None
+    manager_id: str
     created_at: datetime
     updated_at: datetime
 
@@ -122,6 +125,8 @@ class HealthResponse(BaseModel):
     robinhood_logged_in: bool | None = None
     robinhood_auth_error: str | None = None
     robinhood_auth_retry_in_seconds: int | None = None
+    managers: list[ManagerStateSnapshot] = Field(default_factory=list)
+    active_manager: str | None = None
 
 
 class DashboardTweetRead(TweetRead):
@@ -142,6 +147,21 @@ class WorkerStateSnapshot(BaseModel):
     paused: bool
     iteration_count: int = Field(default=0)
     last_error: str | None = None
+
+
+class ManagerStateSnapshot(BaseModel):
+    manager_id: str
+    account_number: str | None = None
+    paused: bool = False
+    enabled: bool = True
+
+
+class OrchestratorStateSnapshot(BaseModel):
+    running: bool
+    paused: bool
+    iteration_count: int = Field(default=0)
+    last_error: str | None = None
+    managers: list[ManagerStateSnapshot] = Field(default_factory=list)
 
 
 class TickerPnlRead(BaseModel):
@@ -166,6 +186,7 @@ class PortfolioPnlResponse(BaseModel):
     total_pnl: float
     include_simulation: bool
     prices_as_of: str
+    manager_id: str | None = None
 
 
 class RobinhoodHoldingRead(BaseModel):
@@ -182,6 +203,7 @@ class RobinhoodHoldingRead(BaseModel):
 class BrokerHoldingsSnapshot(BaseModel):
     available: bool
     account_number: str | None = None
+    manager_id: str | None = None
     error: str | None = None
     holdings: list[RobinhoodHoldingRead] = Field(default_factory=list)
     portfolio_equity: float | None = None
@@ -192,6 +214,12 @@ class BrokerHoldingsSnapshot(BaseModel):
     cash: float | None = None
     total_market_value: float | None = None
     total_unrealized_pnl: float | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def account_balance(self) -> float | None:
+        """Total account value (equities + cash) from Robinhood."""
+        return self.stocks_plus_cash or self.portfolio_equity or self.total_market_value
 
 
 class ChartPointRead(BaseModel):
@@ -238,3 +266,5 @@ class DashboardSnapshot(BaseModel):
     recognized_tickers: list[str]
     worker_iteration_count: int
     worker_last_error: str | None = None
+    active_manager: str | None = None
+    managers: list[ManagerStateSnapshot] = Field(default_factory=list)

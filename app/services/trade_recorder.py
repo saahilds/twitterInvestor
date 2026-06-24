@@ -16,6 +16,7 @@ def create_trade_record(
     amount_usd: float,
     order_result: BrokerOrderResult,
     order_execution_mode: str,
+    manager_id: str,
 ) -> Trade:
     enriched = enrich_broker_order_result(
         order_result,
@@ -38,6 +39,7 @@ def create_trade_record(
         fill_price=enriched.fill_price,
         error_message=enriched.error_message,
         account_number=enriched.account_number,
+        manager_id=manager_id,
         response_json=json.dumps(enriched.raw_response or {}, default=str),
         created_at=now,
         updated_at=now,

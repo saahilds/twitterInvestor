@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
+from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.text_normalize import extract_action_snippet
 
@@ -74,6 +75,9 @@ class RuleBasedSignalParser:
             return self._ignore_signal(raw_text, source_tweet_id, reason_score=max(buy_score, sell_score), ticker=ticker)
 
         action = SignalAction.BUY if buy_score > sell_score else SignalAction.SELL
+        if action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
+            return self._ignore_signal(raw_text, source_tweet_id, reason_score=sell_score, ticker=ticker)
+
         score = max(buy_score, sell_score)
         confidence = min(0.99, 0.45 + (score * 0.12))
 

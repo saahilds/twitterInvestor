@@ -32,7 +32,7 @@ def test_risk_rejects_sell_when_not_in_portfolio(db_session) -> None:
         raw_text="selling NVDA",
         sell_fraction=1.0,
     )
-    result = manager.evaluate(signal, db_session, holding=None)
+    result = manager.evaluate(signal, db_session, holding=None, manager_id="individual")
     assert not result.allowed
     assert result.reason == "not_in_portfolio:NVDA"
 
@@ -56,10 +56,11 @@ def test_risk_sells_fraction_of_portfolio_holding(db_session) -> None:
         raw_text="sold half my $ADEA",
         sell_fraction=0.5,
     )
-    result = manager.evaluate(signal, db_session, holding=holding)
+    result = manager.evaluate(signal, db_session, holding=holding, manager_id="individual")
     assert result.allowed
-    assert result.normalized_trade_usd == 500.0
+    assert result.normalized_trade_usd == 497.5
     assert result.sell_fraction == 0.5
+    assert result.sell_quantity == 9.95
     assert result.reason == "sell_50pct_portfolio"
 
 
@@ -72,7 +73,7 @@ def test_risk_rejects_non_us_symbol(db_session) -> None:
         raw_text="adding EOS.AX",
         suggested_trade_usd=1,
     )
-    result = manager.evaluate(signal, db_session)
+    result = manager.evaluate(signal, db_session, manager_id="individual")
     assert not result.allowed
     assert result.reason.startswith("non_us_symbol")
 
@@ -88,6 +89,7 @@ def test_risk_rejects_duplicate_tweet(db_session) -> None:
         strength="medium",
         score=3,
         raw_text="adding NVDA",
+        manager_id="individual",
         suggested_trade_usd=1,
     )
     db_session.add(parsed)
@@ -103,6 +105,7 @@ def test_risk_rejects_duplicate_tweet(db_session) -> None:
             simulation=True,
             broker_order_id="x",
             response_json="{}",
+            manager_id="individual",
         )
     )
     db_session.commit()
@@ -114,7 +117,7 @@ def test_risk_rejects_duplicate_tweet(db_session) -> None:
         raw_text="adding NVDA again",
         suggested_trade_usd=1,
     )
-    result = manager.evaluate(signal, db_session)
+    result = manager.evaluate(signal, db_session, manager_id="individual")
     assert not result.allowed
     assert result.reason.startswith("duplicate_tweet")
 
@@ -130,6 +133,7 @@ def test_risk_daily_limit_per_ticker(db_session) -> None:
         strength="medium",
         score=3,
         raw_text="adding NVDA",
+        manager_id="individual",
         suggested_trade_usd=1,
     )
     db_session.add(parsed)
@@ -145,6 +149,7 @@ def test_risk_daily_limit_per_ticker(db_session) -> None:
             simulation=True,
             broker_order_id="x",
             response_json="{}",
+            manager_id="individual",
             created_at=datetime.now(timezone.utc),
         )
     )
@@ -157,6 +162,6 @@ def test_risk_daily_limit_per_ticker(db_session) -> None:
         raw_text="adding NVDA",
         suggested_trade_usd=1,
     )
-    result = manager.evaluate(signal, db_session)
+    result = manager.evaluate(signal, db_session, manager_id="individual")
     assert not result.allowed
     assert result.reason.startswith("daily_limit")

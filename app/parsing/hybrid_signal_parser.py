@@ -7,6 +7,7 @@ from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
 from app.parsing.sell_fraction import infer_sell_fraction
+from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_parser import RuleBasedSignalParser
 
 
@@ -57,10 +58,24 @@ class HybridSignalParser:
             else None
         )
         if keyword_action is not None:
+            if keyword_action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
+                return self._rules._ignore_signal(
+                    raw_text,
+                    source_tweet_id,
+                    reason_score=rule_signal.score,
+                    ticker=rule_signal.ticker,
+                )
             return rule_signal
 
         ml_prediction = self._classifier.predict(raw_text)
         if self._ml_usable(ml_prediction):
+            if ml_prediction.action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
+                return self._rules._ignore_signal(
+                    raw_text,
+                    source_tweet_id,
+                    reason_score=rule_signal.score,
+                    ticker=rule_signal.ticker,
+                )
             return self._from_ml(
                 raw_text=raw_text,
                 source_tweet_id=source_tweet_id,
@@ -70,6 +85,13 @@ class HybridSignalParser:
             )
 
         if rule_signal.action != SignalAction.IGNORE:
+            if rule_signal.action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
+                return self._rules._ignore_signal(
+                    raw_text,
+                    source_tweet_id,
+                    reason_score=rule_signal.score,
+                    ticker=rule_signal.ticker,
+                )
             return rule_signal
 
         return rule_signal

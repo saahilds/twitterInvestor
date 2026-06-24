@@ -41,7 +41,7 @@ def test_risk_reload_buy_uses_default_size(db_session) -> None:
         buy_conviction=BuyConviction.RELOAD,
     )
 
-    result = manager.evaluate(signal, db_session, cash_available_usd=2000.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=2000.0)
     assert result.allowed
     assert result.is_new_ticker
     assert result.normalized_trade_usd == 100.0
@@ -72,7 +72,7 @@ def test_risk_thesis_buy_scales_with_confidence(db_session) -> None:
         buy_conviction=BuyConviction.THESIS,
     )
 
-    result = manager.evaluate(signal, db_session, cash_available_usd=2000.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=2000.0)
 
     assert result.allowed
     assert result.is_new_ticker
@@ -104,7 +104,7 @@ def test_risk_thesis_buy_capped_by_cash(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.THESIS,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=300.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=300.0)
 
     assert result.allowed
     assert result.normalized_trade_usd == 295.0
@@ -130,7 +130,7 @@ def test_risk_reload_capped_by_low_cash(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.RELOAD,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=50.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=50.0)
 
     assert result.allowed
     assert result.normalized_trade_usd == 50.0
@@ -157,7 +157,7 @@ def test_risk_blocks_live_buy_when_cash_unknown(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.RELOAD,
     )
-    result = manager.evaluate(signal, db_session, cash_available_usd=None)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=None)
 
     assert not result.allowed
     assert result.reason == "insufficient_cash_data"
@@ -185,7 +185,7 @@ def test_risk_blocks_unlisted_buy_when_confidence_below_floor(db_session) -> Non
         suggested_trade_usd=100,
     )
 
-    result = manager.evaluate(signal, db_session, cash_available_usd=500.0)
+    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=500.0)
 
     assert not result.allowed
     assert result.reason == "unlisted_buy_low_confidence"
@@ -214,6 +214,7 @@ def test_risk_enforces_cooldown(db_session) -> None:
             simulation=True,
             broker_order_id="x",
             response_json="{}",
+            manager_id="individual",
             created_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         )
     )
@@ -227,7 +228,7 @@ def test_risk_enforces_cooldown(db_session) -> None:
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.RELOAD,
     )
-    result = manager.evaluate(signal, db_session)
+    result = manager.evaluate(signal, db_session, manager_id="individual")
 
     assert not result.allowed
     assert result.reason.startswith("cooldown_active")

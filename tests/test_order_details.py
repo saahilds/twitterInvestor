@@ -44,6 +44,23 @@ def test_enrich_failed_order_sets_error_message() -> None:
     assert result.error_message == "invalid_ask_price:FOO"
 
 
+def test_enrich_broker_rejection_detail_marks_failed() -> None:
+    result = enrich_broker_order_result(
+        BrokerOrderResult(
+            status="submitted",
+            simulation=False,
+            raw_response={
+                "order_type": "fractional_market",
+                "side": "sell",
+                "broker_response": {"detail": "Not enough shares to sell."},
+            },
+        ),
+        order_execution_mode="fractional_market",
+    )
+    assert result.status == "failed"
+    assert result.error_message == "Not enough shares to sell."
+
+
 def test_create_trade_record_fields() -> None:
     from app.models.db_models import SignalAction
     from app.services.trade_recorder import create_trade_record
@@ -65,6 +82,7 @@ def test_create_trade_record_fields() -> None:
             order_execution_mode="limit_at_ask",
         ),
         order_execution_mode="limit_at_ask",
+        manager_id="individual",
     )
     assert trade.source_tweet_id == "tweet-1"
     assert trade.limit_price == 100.0
