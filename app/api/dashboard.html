@@ -205,6 +205,7 @@
     }
     .badge.buy { background: rgba(52, 211, 153, 0.15); color: var(--green); }
     .badge.sell { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+    .badge.watch { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
     .badge.ignore { background: #334155; color: var(--muted); }
     .badge.sim { background: #334155; color: var(--muted); }
     .badge.live { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
@@ -586,6 +587,7 @@
               <option value="alerts">Trade alerts</option>
               <option value="buy">Buy</option>
               <option value="sell">Sell</option>
+              <option value="watch">Watch</option>
               <option value="ignore">Ignored</option>
             </select>
             <span class="hint" id="tweetRangeMeta"></span>
@@ -605,6 +607,11 @@
           <p class="empty" id="tradeEmpty" style="display:none">No trades yet.</p>
         </div>
       </section>
+
+      <details class="panel tickers-panel" open>
+        <summary>Watchlist (<span id="watchlistCount">0</span>)</summary>
+        <div class="chips" id="watchlistChips"></div>
+      </details>
 
       <details class="panel tickers-panel" open>
         <summary>Recognized tickers (<span id="tickerCount">0</span>)</summary>
@@ -660,6 +667,7 @@
       alerts: "Trade alerts",
       buy: "Buy",
       sell: "Sell",
+      watch: "Watch",
       ignore: "Ignored",
     };
     const managerQuery = () => {
@@ -998,11 +1006,28 @@
 
     function signalBadge(action, ticker, rejection) {
       if (!action) return "";
-      const cls = action === "BUY" ? "buy" : action === "SELL" ? "sell" : "ignore";
+      const cls = action === "BUY" ? "buy" : action === "SELL" ? "sell" : action === "WATCH" ? "watch" : "ignore";
       const label = ticker ? `${action} ${ticker}` : action;
       let html = `<span class="badge ${cls}">${esc(label)}</span>`;
       if (rejection) html += `<span class="badge ignore" title="${esc(rejection)}">rejected</span>`;
       return html;
+    }
+
+    function renderWatchlist(entries = []) {
+      const el = document.getElementById("watchlistChips");
+      document.getElementById("watchlistCount").textContent = String(entries.length);
+      el.innerHTML = "";
+      if (!entries.length) {
+        el.innerHTML = `<span class="empty">None yet</span>`;
+        return;
+      }
+      for (const row of entries) {
+        const span = document.createElement("span");
+        span.className = "chip";
+        span.title = `${row.watch_conviction} · score ${row.conviction_score.toFixed(1)}`;
+        span.textContent = `${row.ticker} (${row.conviction_score.toFixed(1)})`;
+        el.appendChild(span);
+      }
     }
 
     function renderTickerChips(filter = "") {
@@ -1145,6 +1170,7 @@
       document.getElementById("resumeBtn").disabled = !h.worker_paused;
 
       renderTrades(data);
+      renderWatchlist(data.watchlist || []);
       allTickers = data.recognized_tickers || [];
       document.getElementById("tickerCount").textContent = String(allTickers.length);
       renderTickerChips(document.getElementById("tickerFilter").value);

@@ -10,6 +10,7 @@ __pycache__/
 !.env.example
 
 # Local runtime data
+.local/
 trading_bot.db
 trading_bot.db-*
 logs/

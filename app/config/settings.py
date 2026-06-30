@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
 
+    watchlist_stale_days: int = 30
+    watchlist_max_conviction_score: float = 5.0
+
     chart_ytd_baseline_usd: float = 5000.0
 
     simulation_mode: bool = True

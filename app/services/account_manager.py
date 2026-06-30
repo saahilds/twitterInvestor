@@ -110,6 +110,9 @@ class AccountManager:
                 raw_text=signal.raw_text,
                 suggested_trade_usd=signal.suggested_trade_usd,
                 rejection_reason=None if risk_result.allowed else risk_result.reason,
+                watch_conviction=(
+                    signal.watch_conviction.value if signal.watch_conviction is not None else None
+                ),
                 manager_id=self.id,
             )
             db.add(parsed_signal)
@@ -244,6 +247,67 @@ class AccountManager:
             manager_id=self.id,
             parsed_signal_id=parsed_signal_id,
             trade_id=trade.id,
+            allowed=True,
+        )
+
+    async def record_watch(
+        self,
+        signal: TradeSignal,
+        tweet: IngestedTweet,
+    ) -> ManagerExecutionResult:
+        if self._paused or not self.config.enabled:
+            return ManagerExecutionResult(
+                manager_id=self.id,
+                allowed=False,
+                rejection_reason="manager_paused",
+            )
+        if signal.ticker is None or signal.watch_conviction is None:
+            return ManagerExecutionResult(
+                manager_id=self.id,
+                allowed=False,
+                rejection_reason="invalid_watch_signal",
+            )
+
+        with self.session_factory() as db:
+            parsed_signal = ParsedSignal(
+                tweet_pk=tweet.tweet_pk,
+                source_tweet_id=signal.source_tweet_id,
+                ticker=signal.ticker,
+                action=SignalAction.WATCH,
+                confidence=signal.confidence,
+                strength=signal.strength,
+                score=signal.score,
+                raw_text=signal.raw_text,
+                suggested_trade_usd=0.0,
+                rejection_reason=None,
+                watch_conviction=signal.watch_conviction.value,
+                manager_id=self.id,
+            )
+            db.add(parsed_signal)
+            db.flush()
+            parsed_signal_id = parsed_signal.id
+            self.risk_manager.watchlist.upsert(
+                signal.ticker,
+                db,
+                manager_id=self.id,
+                watch_conviction=signal.watch_conviction,
+                source_tweet_id=signal.source_tweet_id,
+            )
+
+        self.logger.info(
+            "watch_signal_recorded",
+            extra={
+                "event_type": "watchlist",
+                "manager_id": self.id,
+                "tweet_id": tweet.tweet_id,
+                "ticker": signal.ticker,
+                "watch_conviction": signal.watch_conviction.value,
+                "confidence": signal.confidence,
+            },
+        )
+        return ManagerExecutionResult(
+            manager_id=self.id,
+            parsed_signal_id=parsed_signal_id,
             allowed=True,
         )
 

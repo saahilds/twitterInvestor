@@ -137,7 +137,19 @@ class BotOrchestrator:
         manager_ids = [manager.id for manager in self.managers if manager.config.enabled]
         with self.session_factory() as db:
             registry = self.managers[0].risk_manager.registry if self.managers else None
-            known_tickers = registry.union_tickers(db, manager_ids) if registry else set()
+            watchlist = self.managers[0].risk_manager.watchlist if self.managers else None
+            known_tickers: set[str] = set()
+            if registry is not None:
+                known_tickers |= registry.union_tickers(db, manager_ids)
+            if watchlist is not None:
+                known_tickers |= watchlist.union_tickers(db, manager_ids)
+            if watchlist is not None and manager_ids:
+                pruned = watchlist.prune_stale(db, manager_ids)
+                if pruned:
+                    self.logger.info(
+                        "watchlist_pruned_stale",
+                        extra={"event_type": "watchlist", "removed": pruned},
+                    )
 
         for tweet in new_tweets:
             signal = self.parser.parse(
@@ -146,6 +158,13 @@ class BotOrchestrator:
                 extra_known_tickers=known_tickers,
             )
             if signal.action == SignalAction.IGNORE:
+                continue
+
+            if signal.action == SignalAction.WATCH:
+                for manager in self.managers:
+                    if not manager.config.enabled:
+                        continue
+                    await manager.record_watch(signal, tweet)
                 continue
 
             for manager in self.managers:

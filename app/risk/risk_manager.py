@@ -13,6 +13,7 @@ from app.parsing.buy_conviction import BuyConviction
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
 from app.risk.sell_sizing import resolve_sell_order
 from app.services.recognized_tickers import RecognizedTickerRegistry
+from app.services.watchlist import WatchlistRegistry
 
 
 @dataclass(slots=True)
@@ -34,6 +35,8 @@ class RiskConfig:
     thesis_trade_max_usd: float = 1000.0
     cash_buffer_usd: float = 0.0
     min_buy_notional_usd: float = 1.0
+    watchlist_stale_days: int = 30
+    watchlist_max_conviction_score: float = 5.0
 
 
 class RiskManager:
@@ -43,9 +46,14 @@ class RiskManager:
         self,
         config: RiskConfig,
         registry: RecognizedTickerRegistry | None = None,
+        watchlist: WatchlistRegistry | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or RecognizedTickerRegistry()
+        self.watchlist = watchlist or WatchlistRegistry(
+            max_conviction_score=config.watchlist_max_conviction_score,
+            stale_days=config.watchlist_stale_days,
+        )
 
     def evaluate(
         self,
@@ -58,6 +66,9 @@ class RiskManager:
     ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
+
+        if signal.action == SignalAction.WATCH:
+            return RiskCheckResult(allowed=False, reason="watch_signal_no_trade")
 
         if not signal.ticker:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
@@ -87,6 +98,10 @@ class RiskManager:
             if holding is None or holding.quantity <= 0:
                 return RiskCheckResult(allowed=False, reason=f"not_in_portfolio:{ticker}")
             sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
+            sell_fraction = min(
+                1.0,
+                self._watchlist_multiplier(ticker, db, manager_id=manager_id) * sell_fraction,
+            )
             if sell_fraction <= 0:
                 return RiskCheckResult(allowed=False, reason="sell_fraction_zero")
             sell_order = resolve_sell_order(
@@ -108,6 +123,8 @@ class RiskManager:
                 signal=signal,
                 recognized=recognized,
                 cash_available_usd=cash_available_usd,
+                db=db,
+                manager_id=manager_id,
             )
             if normalized_trade <= 0 or normalized_trade < self.config.min_buy_notional_usd:
                 return RiskCheckResult(allowed=False, reason="insufficient_cash")
@@ -173,16 +190,17 @@ class RiskManager:
         signal: TradeSignal,
         recognized: bool,
         cash_available_usd: float | None,
+        db: Session,
+        manager_id: str,
     ) -> tuple[float, bool, BuyConviction]:
         if signal.action != SignalAction.BUY:
             return 0.0, False, BuyConviction.STANDARD
 
         conviction = signal.buy_conviction or BuyConviction.STANDARD
-        if conviction == BuyConviction.THESIS:
-            target = self._thesis_size_from_confidence(signal.confidence)
-        else:
-            target = self.config.default_trade_size_usd
-
+        size_min, size_max = self._buy_size_bounds(conviction)
+        target = self._size_from_confidence(size_min, size_max, signal.confidence)
+        if signal.ticker:
+            target *= self._watchlist_multiplier(signal.ticker, db, manager_id=manager_id)
         target = min(target, self.config.max_trade_size_usd)
 
         if cash_available_usd is not None:
@@ -191,14 +209,34 @@ class RiskManager:
 
         return max(0.0, target), not recognized, conviction
 
-    def _thesis_size_from_confidence(self, confidence: float) -> float:
-        thesis_min = self.config.thesis_trade_min_usd
-        thesis_max = self.config.thesis_trade_max_usd
-        if thesis_max <= thesis_min:
-            return thesis_min
+    def _buy_size_bounds(self, conviction: BuyConviction) -> tuple[float, float]:
+        default = self.config.default_trade_size_usd
+        cap = self.config.max_trade_size_usd
+        if conviction == BuyConviction.THESIS:
+            return self.config.thesis_trade_min_usd, self.config.thesis_trade_max_usd
+        if conviction == BuyConviction.RELOAD:
+            return default, cap * 0.75
+        return default, cap * 0.5
+
+    @staticmethod
+    def _size_from_confidence(size_min: float, size_max: float, confidence: float) -> float:
+        if size_max <= size_min:
+            return size_min
         t = (confidence - 0.5) / 0.49
         t = min(1.0, max(0.0, t))
-        return thesis_min + t * (thesis_max - thesis_min)
+        return size_min + t * (size_max - size_min)
+
+    def _watchlist_multiplier(self, ticker: str, db: Session, *, manager_id: str) -> float:
+        entry = self.watchlist.get(ticker, db, manager_id=manager_id)
+        if entry is None:
+            return 1.0
+        from app.parsing.watch_conviction import WatchConviction, watch_size_multiplier
+
+        try:
+            conviction = WatchConviction(entry.watch_conviction)
+        except ValueError:
+            conviction = WatchConviction.STANDARD
+        return watch_size_multiplier(conviction, entry.conviction_score)
 
     @staticmethod
     def _buy_reason(conviction: BuyConviction | None, normalized_trade: float) -> str:

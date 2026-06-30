@@ -362,6 +362,16 @@ curl "http://127.0.0.1:8000/signals?limit=50"
 
 BUY signals place a **limit buy at the ask** (or fractional market per `ORDER_EXECUTION_MODE`). **SELL** signals sell a **fraction of the live position** (trim ≈ 25%, half = 50%, closed/sell = 100%, or explicit `%` in the tweet) only when the ticker is held in Robinhood. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
 
+## Local Mac schedule (8 AM – 6 PM ET)
+
+Run the bot on your Mac daily without leaving it on 24/7: **[docs/LOCAL_MAC.md](docs/LOCAL_MAC.md)**.
+
+```bash
+./scripts/local/install_schedule.sh   # launchd: start 8 AM, stop 6 PM Eastern
+./scripts/local/start_bot.sh          # manual start
+./scripts/local/stop_bot.sh           # manual stop
+```
+
 ## VPS deployment (Hetzner)
 
 For production on Hetzner CX32 (extended hours, morning backfill, Caddy HTTPS dashboard): **[docs/VPS.md](docs/VPS.md)**.

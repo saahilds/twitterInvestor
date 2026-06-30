@@ -16,6 +16,7 @@ def utc_now() -> datetime:
 class SignalAction(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
+    WATCH = "WATCH"
     IGNORE = "IGNORE"
 
 
@@ -44,6 +45,17 @@ class RecognizedTicker(Base):
     source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class WatchlistEntry(Base):
+    __tablename__ = "watchlist"
+
+    manager_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+    conviction_score: Mapped[float] = mapped_column(Float, default=0.0)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    watch_conviction: Mapped[str] = mapped_column(String(32), default="watch")
+
+
 class ParsedSignal(Base):
     __tablename__ = "parsed_signals"
 
@@ -58,6 +70,7 @@ class ParsedSignal(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     suggested_trade_usd: Mapped[float] = mapped_column(Float, default=0.0)
     rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    watch_conviction: Mapped[str | None] = mapped_column(String(32), nullable=True)
     manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 

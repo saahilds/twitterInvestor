@@ -12,7 +12,7 @@ TWEET_RANGE_KEYS = portfolio_history.RANGE_KEYS
 DEFAULT_TWEET_RANGE = "1w"
 DEFAULT_TWEET_LIMIT = 500
 MAX_TWEET_LIMIT = 2000
-TWEET_SIGNAL_FILTERS = frozenset({"all", "alerts", "buy", "sell", "ignore"})
+TWEET_SIGNAL_FILTERS = frozenset({"all", "alerts", "buy", "sell", "watch", "ignore"})
 DEFAULT_TWEET_SIGNAL_FILTER = "all"
 
 
@@ -77,6 +77,8 @@ def apply_signal_filter(stmt, signal_filter: str):
         return stmt.where(latest_action == SignalAction.BUY)
     if key == "sell":
         return stmt.where(latest_action == SignalAction.SELL)
+    if key == "watch":
+        return stmt.where(latest_action == SignalAction.WATCH)
     if key == "ignore":
         return stmt.where(latest_action == SignalAction.IGNORE)
     return stmt

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.models.db_models import SignalAction
 from app.parsing.buy_conviction import BuyConviction
+from app.parsing.watch_conviction import WatchConviction
 
 
 class IngestedTweet(BaseModel):
@@ -30,6 +31,7 @@ class TradeSignal(BaseModel):
     suggested_trade_usd: float = 0.0
     sell_fraction: float | None = None
     buy_conviction: BuyConviction | None = None
+    watch_conviction: WatchConviction | None = None
 
 
 class RiskCheckResult(BaseModel):
@@ -81,6 +83,7 @@ class ParsedSignalRead(BaseModel):
     score: int
     suggested_trade_usd: float
     rejection_reason: str | None
+    watch_conviction: str | None = None
     manager_id: str
     created_at: datetime
 
@@ -257,6 +260,17 @@ class PortfolioChartResponse(BaseModel):
     session_end: str | None = None
 
 
+class WatchlistEntryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    manager_id: str
+    ticker: str
+    conviction_score: float
+    last_seen_at: datetime
+    source_tweet_id: str | None
+    watch_conviction: str
+
+
 class DashboardSnapshot(BaseModel):
     health: HealthResponse
     pnl: PortfolioPnlResponse
@@ -264,6 +278,7 @@ class DashboardSnapshot(BaseModel):
     recent_tweets: list[DashboardTweetRead]
     recent_trades: list[TradeRead]
     recognized_tickers: list[str]
+    watchlist: list[WatchlistEntryRead] = Field(default_factory=list)
     worker_iteration_count: int
     worker_last_error: str | None = None
     active_manager: str | None = None

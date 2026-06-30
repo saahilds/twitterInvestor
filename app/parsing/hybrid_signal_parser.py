@@ -51,6 +51,9 @@ class HybridSignalParser:
         if rule_signal.ticker is None:
             return rule_signal
 
+        if rule_signal.action == SignalAction.WATCH:
+            return rule_signal
+
         keyword_action = (
             rule_signal.action
             if rule_signal.action != SignalAction.IGNORE
@@ -86,6 +89,14 @@ class HybridSignalParser:
 
         if rule_signal.action != SignalAction.IGNORE:
             if rule_signal.action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
+                watch = self._rules._watch_signal(
+                    raw_text,
+                    source_tweet_id,
+                    rule_signal.ticker or "",
+                    rule_signal.score,
+                )
+                if watch is not None:
+                    return watch
                 return self._rules._ignore_signal(
                     raw_text,
                     source_tweet_id,
@@ -93,6 +104,15 @@ class HybridSignalParser:
                     ticker=rule_signal.ticker,
                 )
             return rule_signal
+
+        watch = self._rules._watch_signal(
+            raw_text,
+            source_tweet_id,
+            rule_signal.ticker or "",
+            rule_signal.score,
+        )
+        if watch is not None:
+            return watch
 
         return rule_signal
 

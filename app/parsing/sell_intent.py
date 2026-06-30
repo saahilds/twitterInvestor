@@ -14,6 +14,11 @@ _SELL_COMMENTARY = (
     r"\bsell the news\b",
     r"\bmarket sell\b",
     r"\bsell pressure\b",
+    r"\bhaven'?t sold\b",
+    r"\bhave not sold\b",
+    r"\bhasn'?t sold\b",
+    r"\bhas not sold\b",
+    r"\bnot sold\b",
 )
 
 # Conditional / future tense — not an executed sell alert.
@@ -24,10 +29,15 @@ _SELL_HYPOTHETICAL = (
     r"\bwill sell\b",
     r"\bmight sell\b",
     r"\bpossibly sell\b",
-    r"\bgoing to sell\b",
     r"\bplan to sell\b",
     r"\bconsider selling\b",
     r"\bif i sell\b",
+)
+
+# Imminent author sell intent (preemptive alerts).
+_PREEMPTIVE_SELL = (
+    r"\bgoing to sell before\b",
+    r"\bgoing to sell\b",
 )
 
 # Past-tense or explicit trade-alert sell language.
@@ -54,20 +64,46 @@ _AFFIRMATIVE_SELL = (
     r"\bfreeing up some cash\b",
 )
 
+# Recounting a past round-trip — not a live sell alert.
+_PAST_TRADE_RECAP = (
+    r"\beventually sold\b",
+    r"\bcovered\b",
+    r"\band sold at\b",
+    r"\bhad sold\b",
+    r"\bpreviously sold\b",
+    r"\bsold at \$[\d.]+\.\s",
+)
+
 
 def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text) for pattern in patterns)
+
+
+def sell_suppressed_by_watch(text: str) -> bool:
+    """Past trade recap + current watch interest — not a live sell alert."""
+    from app.parsing.watch_conviction import infer_watch_conviction
+
+    if infer_watch_conviction(text) is None:
+        return False
+    lower = text.lower()
+    return _matches_any(_PAST_TRADE_RECAP, lower)
 
 
 def is_affirmative_sell_intent(text: str) -> bool:
     """True when the tweet is an executed or explicit sell alert, not commentary."""
     snippet = extract_action_snippet(text).lower()
 
-    if _matches_any(_AFFIRMATIVE_SELL, snippet):
-        return True
+    if sell_suppressed_by_watch(text):
+        return False
 
     if _matches_any(_SELL_COMMENTARY, snippet):
         return False
+
+    if _matches_any(_AFFIRMATIVE_SELL, snippet):
+        return True
+
+    if _matches_any(_PREEMPTIVE_SELL, snippet):
+        return True
 
     if _matches_any(_SELL_HYPOTHETICAL, snippet):
         return False

@@ -20,6 +20,7 @@ from app.risk.risk_manager import RiskConfig, RiskManager
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 from app.services.account_manager import AccountManager
 from app.services.audit import ExecutionAuditLogger
+from app.services.watchlist import WatchlistRegistry
 from app.portfolio.quotes import QuoteProvider
 from app.services.pnl_service import PnlService
 from app.services.trade_status import TradeStatusSync
@@ -59,6 +60,13 @@ risk_config = RiskConfig(
     live_trading_enabled=settings.live_trading_enabled,
     min_buy_confidence_unlisted=settings.min_buy_confidence_unlisted,
     min_sell_notional_usd=settings.min_sell_notional_usd,
+    watchlist_stale_days=settings.watchlist_stale_days,
+    watchlist_max_conviction_score=settings.watchlist_max_conviction_score,
+)
+
+watchlist_registry = WatchlistRegistry(
+    max_conviction_score=settings.watchlist_max_conviction_score,
+    stale_days=settings.watchlist_stale_days,
 )
 
 manager_configs = parse_bot_managers(settings)
@@ -76,7 +84,7 @@ if settings.broker_backend == "mock":
                 config=cfg,
                 settings=settings,
                 broker=broker,
-                risk_manager=RiskManager(risk_config),
+                risk_manager=RiskManager(risk_config, watchlist=watchlist_registry),
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=None,
@@ -99,7 +107,7 @@ else:
                 config=cfg,
                 settings=settings,
                 broker=broker,
-                risk_manager=RiskManager(risk_config),
+                risk_manager=RiskManager(risk_config, watchlist=watchlist_registry),
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=trade_status,

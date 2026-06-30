@@ -20,11 +20,11 @@ $AAOI
  is sitting roughly 30% off its all time highs and the reason is dilution overhang. Every time this company raises capital the stock sells off as the market digests new shares."""
 
 
-def test_risk_reload_buy_uses_default_size(db_session) -> None:
+def test_risk_reload_buy_scales_with_confidence(db_session) -> None:
     manager = RiskManager(
         RiskConfig(
             seed_tickers={"AAPL"},
-            max_trade_size_usd=500,
+            max_trade_size_usd=1000,
             default_trade_size_usd=100,
             new_ticker_size_multiplier=10,
             cooldown_seconds=300,
@@ -36,6 +36,7 @@ def test_risk_reload_buy_uses_default_size(db_session) -> None:
         source_tweet_id="t-1",
         ticker="TSLA",
         action=SignalAction.BUY,
+        confidence=0.81,
         raw_text="adding TSLA",
         suggested_trade_usd=100,
         buy_conviction=BuyConviction.RELOAD,
@@ -44,7 +45,8 @@ def test_risk_reload_buy_uses_default_size(db_session) -> None:
     result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=2000.0)
     assert result.allowed
     assert result.is_new_ticker
-    assert result.normalized_trade_usd == 100.0
+    assert result.normalized_trade_usd > 100.0
+    assert result.normalized_trade_usd <= 750.0
     assert result.reason == "reload_sized"
 
 

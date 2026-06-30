@@ -9,6 +9,7 @@ from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.text_normalize import extract_action_snippet
+from app.parsing.watch_conviction import WatchConviction, infer_watch_conviction
 
 
 class RuleBasedSignalParser:
@@ -37,6 +38,8 @@ class RuleBasedSignalParser:
             "long": 2,
             "scale in": 2,
             "add": 2,
+            "% port": 4,
+            "port in": 3,
         }
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
@@ -72,11 +75,18 @@ class RuleBasedSignalParser:
         sell_score = self._score(normalized, self.sell_keywords)
 
         if buy_score == sell_score:
+            watch = self._watch_signal(raw_text, source_tweet_id, ticker, max(buy_score, sell_score))
+            if watch is not None:
+                return watch
             return self._ignore_signal(raw_text, source_tweet_id, reason_score=max(buy_score, sell_score), ticker=ticker)
 
         action = SignalAction.BUY if buy_score > sell_score else SignalAction.SELL
-        if action == SignalAction.SELL and not is_affirmative_sell_intent(raw_text):
-            return self._ignore_signal(raw_text, source_tweet_id, reason_score=sell_score, ticker=ticker)
+        if action == SignalAction.SELL:
+            watch = self._watch_signal(raw_text, source_tweet_id, ticker, sell_score)
+            if watch is not None:
+                return watch
+            if not is_affirmative_sell_intent(raw_text):
+                return self._ignore_signal(raw_text, source_tweet_id, reason_score=sell_score, ticker=ticker)
 
         score = max(buy_score, sell_score)
         confidence = min(0.99, 0.45 + (score * 0.12))
@@ -148,6 +158,38 @@ class RuleBasedSignalParser:
         if score >= 1:
             return "weak"
         return "none"
+
+    def _watch_signal(
+        self,
+        raw_text: str,
+        source_tweet_id: str,
+        ticker: str,
+        reason_score: int,
+    ) -> TradeSignal | None:
+        watch_conviction = infer_watch_conviction(raw_text)
+        if watch_conviction is None:
+            return None
+        confidence = self._watch_confidence(watch_conviction)
+        return TradeSignal(
+            source_tweet_id=source_tweet_id,
+            ticker=ticker,
+            action=SignalAction.WATCH,
+            confidence=confidence,
+            strength=watch_conviction.value,
+            score=reason_score,
+            raw_text=raw_text,
+            suggested_trade_usd=0.0,
+            watch_conviction=watch_conviction,
+        )
+
+    @staticmethod
+    def _watch_confidence(conviction: WatchConviction) -> float:
+        return {
+            WatchConviction.SOFT: 0.45,
+            WatchConviction.START: 0.55,
+            WatchConviction.STANDARD: 0.65,
+            WatchConviction.HEAVY: 0.80,
+        }[conviction]
 
     def _ignore_signal(
         self,

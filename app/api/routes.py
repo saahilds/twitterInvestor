@@ -16,7 +16,7 @@ from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.execution.robinhood_session import RobinhoodSessionManager
-from app.models.db_models import ParsedSignal, RecognizedTicker, Trade, Tweet
+from app.models.db_models import ParsedSignal, RecognizedTicker, Trade, Tweet, WatchlistEntry
 from app.risk.market_hours import is_within_regular_market_hours
 from app.models.schemas import (
     BrokerHoldingsSnapshot,
@@ -31,6 +31,7 @@ from app.models.schemas import (
     TradeChartAnnotationRead,
     RobinhoodHoldingRead,
     TradeRead,
+    WatchlistEntryRead,
     TweetRead,
     WorkerControlResponse,
 )
@@ -144,6 +145,19 @@ def create_router(
                 .limit(limit)
             ).scalars().all()
         return [ParsedSignalRead.model_validate(row) for row in rows]
+
+    @router.get("/watchlist", response_model=list[WatchlistEntryRead])
+    async def list_watchlist(
+        manager: str | None = Query(default=None),
+    ) -> list[WatchlistEntryRead]:
+        manager_id = _resolve_manager_id(manager)
+        with session_factory() as db:
+            rows = db.execute(
+                select(WatchlistEntry)
+                .where(WatchlistEntry.manager_id == manager_id)
+                .order_by(WatchlistEntry.conviction_score.desc(), WatchlistEntry.last_seen_at.desc())
+            ).scalars().all()
+        return [WatchlistEntryRead.model_validate(row) for row in rows]
 
     @router.get("/trades", response_model=list[TradeRead])
     async def list_trades(
@@ -401,6 +415,11 @@ def create_router(
                 .where(RecognizedTicker.manager_id == manager_id)
                 .order_by(RecognizedTicker.ticker.asc())
             ).scalars().all()
+            watchlist_rows = db.execute(
+                select(WatchlistEntry)
+                .where(WatchlistEntry.manager_id == manager_id)
+                .order_by(WatchlistEntry.conviction_score.desc(), WatchlistEntry.last_seen_at.desc())
+            ).scalars().all()
 
         if include_broker:
             broker_holdings = await _fetch_broker_holdings(manager_id=manager_id)
@@ -438,6 +457,7 @@ def create_router(
             recent_tweets=[],
             recent_trades=[TradeRead.model_validate(row) for row in trades],
             recognized_tickers=[str(ticker) for ticker in recognized],
+            watchlist=[WatchlistEntryRead.model_validate(row) for row in watchlist_rows],
             worker_iteration_count=snapshot.iteration_count,
             worker_last_error=snapshot.last_error,
             active_manager=manager_id,
