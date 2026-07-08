@@ -12,7 +12,7 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
 - Basic risk controls: recognized ticker registry (auto-grows), max trade size, cooldown, duplicate prevention
-- Conviction-based buy sizing: reload tweets use `DEFAULT_TRADE_SIZE_USD`; thesis tweets scale $500–$1000 by confidence (capped by cash, never margin)
+- Conviction-based buy sizing as **% of portfolio equity**: tweet allocation % (e.g. `2% port`, `5% weight`) when stated; otherwise standard/reload/thesis tiers scaled by confidence (capped by cash, never margin)
 - Broker interface with Robinhood + mock implementations
 - Structured logging to console and rotating file logs
 - FastAPI endpoints for health, tweets, signals, trades, pause/resume
@@ -323,7 +323,7 @@ curl "http://127.0.0.1:8000/signals?limit=50"
 - Live trading requires both:
   - `ENABLE_LIVE_TRADING=true`
   - `SIMULATION_MODE=false`
-- Buy sizing uses conviction tiers (reload = `DEFAULT_TRADE_SIZE_USD`, thesis = `THESIS_TRADE_MIN_USD`–`THESIS_TRADE_MAX_USD` by confidence), capped by `MAX_TRADE_SIZE_USD` and available **cash** (never buying power / margin).
+- Buy sizing is **portfolio-relative** (% of account equity from Robinhood, or `SIMULATION_PORTFOLIO_USD` in simulation). Tweet allocation % overrides when present; otherwise conviction tiers (`DEFAULT_BUY_ALLOCATION_PCT` → `RELOAD_*` → `THESIS_*`) scale with confidence, capped by `MAX_BUY_ALLOCATION_PCT` and available **cash** (never buying power / margin). Partial sells cap at `MAX_SELL_NOTIONAL_PCT` of portfolio.
 - `ALLOWED_TICKERS` seeds the DB at startup; **BUY** signals for other US tickers still execute (new-ticker sizing applies). **SELL** requires an open Robinhood position (not the allowlist).
 
 ### Live trading test checklist (market hours)
@@ -335,10 +335,12 @@ curl "http://127.0.0.1:8000/signals?limit=50"
    ENABLE_LIVE_TRADING=true
    BROKER_BACKEND=robinhood
    ORDER_EXECUTION_MODE=limit_at_ask
-   DEFAULT_TRADE_SIZE_USD=100.0
-   MAX_TRADE_SIZE_USD=1000.0
-   THESIS_TRADE_MIN_USD=500.0
-   THESIS_TRADE_MAX_USD=1000.0
+   DEFAULT_BUY_ALLOCATION_PCT=1.0
+   MAX_BUY_ALLOCATION_PCT=10.0
+   RELOAD_BUY_ALLOCATION_PCT_MAX=5.0
+   THESIS_BUY_ALLOCATION_PCT_MIN=3.0
+   THESIS_BUY_ALLOCATION_PCT_MAX=7.0
+   SIMULATION_PORTFOLIO_USD=10000.0
    TRADING_WINDOW_ENABLED=true
    US_SYMBOLS_ONLY=true
    ROBINHOOD_USERNAME=...
@@ -397,7 +399,7 @@ Railway environment variables to configure:
 - `SIMULATION_MODE` (keep `true` until confident)
 - `ENABLE_LIVE_TRADING`
 - `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` (only for live)
-- Risk settings (`MAX_TRADE_SIZE_USD`, `COOLDOWN_SECONDS`, etc.)
+- Risk settings (`DEFAULT_BUY_ALLOCATION_PCT`, `MAX_BUY_ALLOCATION_PCT`, `COOLDOWN_SECONDS`, etc.)
 
 Deploy steps:
 

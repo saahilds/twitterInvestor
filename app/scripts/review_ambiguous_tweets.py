@@ -27,7 +27,6 @@ def main() -> None:
     engine = create_engine(settings.database_url)
     hybrid = HybridSignalParser(
         known_tickers=settings.allowed_tickers,
-        default_trade_size_usd=settings.default_trade_size_usd,
         default_sell_fraction=settings.default_sell_fraction,
         ml_min_confidence=settings.signal_ml_min_confidence,
         ml_min_margin=settings.signal_ml_min_margin,

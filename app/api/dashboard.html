@@ -540,7 +540,7 @@
           <div class="stat"><label>Total P&amp;L</label><div class="val" id="totalPnl">—</div></div>
           <div class="stat"><label>Unrealized</label><div class="val" id="unrealizedPnl">—</div></div>
           <div class="stat"><label>Realized</label><div class="val" id="realizedPnl">—</div></div>
-          <div class="stat"><label>Default trade</label><div class="val" id="defaultTrade">—</div></div>
+          <div class="stat"><label>Default buy %</label><div class="val" id="defaultTrade">—</div></div>
         </div>
         <div class="panel">
           <h3>Positions from bot trades (database)</h3>
@@ -1141,7 +1141,7 @@
 
       renderManagerSelect(data.managers || h.managers || []);
 
-      document.getElementById("defaultTrade").textContent = fmtUsd(h.default_trade_size_usd);
+      document.getElementById("defaultTrade").textContent = `${h.default_buy_allocation_pct}%`;
 
       const pills = document.getElementById("statusPills");
       pills.innerHTML = "";

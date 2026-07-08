@@ -5,11 +5,22 @@ import pytest
 
 from app.config.account_managers import AccountManagerConfig
 from app.config.settings import Settings
-from app.execution.holdings import BrokerHolding
+from app.execution.holdings import BrokerHolding, BrokerPortfolioMetrics
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.models.db_models import SignalAction
-from app.risk.risk_manager import RiskConfig, RiskManager
+from app.risk.risk_manager import RiskManager
 from app.services.account_manager import AccountManager
+from app.testing.risk_config import make_risk_config
+
+
+def _portfolio_metrics() -> BrokerPortfolioMetrics:
+    return BrokerPortfolioMetrics(
+        stocks_plus_cash=10_000.0,
+        portfolio_equity=10_000.0,
+        positions_market_value=None,
+        profile_market_value=None,
+        cash=2_000.0,
+    )
 
 
 def _holding(*, quantity: float = 10.0, last_price: float = 50.0) -> BrokerHolding:
@@ -29,22 +40,13 @@ def _holding(*, quantity: float = 10.0, last_price: float = 50.0) -> BrokerHoldi
 async def test_resolve_live_sell_order_uses_current_holdings() -> None:
     broker = MagicMock(spec=RobinhoodBroker)
     broker.get_holding = MagicMock(return_value=(_holding(quantity=8.0), None))
+    broker.get_portfolio_metrics = MagicMock(return_value=_portfolio_metrics())
 
     manager = AccountManager(
         config=AccountManagerConfig(id="joint", robinhood_account="joint"),
         settings=Settings(),
         broker=broker,
-        risk_manager=RiskManager(
-            RiskConfig(
-                seed_tickers=set(),
-                max_trade_size_usd=10_000,
-                default_trade_size_usd=1,
-                new_ticker_size_multiplier=10,
-                cooldown_seconds=0,
-                duplicate_window_seconds=0,
-                trading_window_enabled=False,
-            )
-        ),
+        risk_manager=RiskManager(make_risk_config(cooldown_seconds=0, duplicate_window_seconds=0)),
         session_factory=MagicMock(),
         logger=logging.getLogger("test"),
     )
@@ -60,22 +62,13 @@ async def test_resolve_live_sell_order_uses_current_holdings() -> None:
 async def test_resolve_live_sell_order_returns_none_when_flat() -> None:
     broker = MagicMock(spec=RobinhoodBroker)
     broker.get_holding = MagicMock(return_value=(None, None))
+    broker.get_portfolio_metrics = MagicMock(return_value=_portfolio_metrics())
 
     manager = AccountManager(
         config=AccountManagerConfig(id="joint", robinhood_account="joint"),
         settings=Settings(),
         broker=broker,
-        risk_manager=RiskManager(
-            RiskConfig(
-                seed_tickers=set(),
-                max_trade_size_usd=10_000,
-                default_trade_size_usd=1,
-                new_ticker_size_multiplier=10,
-                cooldown_seconds=0,
-                duplicate_window_seconds=0,
-                trading_window_enabled=False,
-            )
-        ),
+        risk_manager=RiskManager(make_risk_config(cooldown_seconds=0, duplicate_window_seconds=0)),
         session_factory=MagicMock(),
         logger=logging.getLogger("test"),
     )

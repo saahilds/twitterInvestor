@@ -6,6 +6,7 @@ from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
+from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_parser import RuleBasedSignalParser
@@ -17,7 +18,6 @@ class HybridSignalParser:
     def __init__(
         self,
         known_tickers: Iterable[str],
-        default_trade_size_usd: float = 1.0,
         default_sell_fraction: float = 1.0,
         *,
         action_classifier: ActionClassifier | None = None,
@@ -27,7 +27,6 @@ class HybridSignalParser:
     ) -> None:
         self._rules = RuleBasedSignalParser(
             known_tickers=known_tickers,
-            default_trade_size_usd=default_trade_size_usd,
             default_sell_fraction=default_sell_fraction,
         )
         self._classifier = action_classifier or ActionClassifier.train()
@@ -84,7 +83,6 @@ class HybridSignalParser:
                 source_tweet_id=source_tweet_id,
                 ticker=rule_signal.ticker,
                 prediction=ml_prediction,
-                suggested_trade_usd=self._rules.default_trade_size_usd,
             )
 
         if rule_signal.action != SignalAction.IGNORE:
@@ -131,13 +129,13 @@ class HybridSignalParser:
         source_tweet_id: str,
         ticker: str,
         prediction: ActionPrediction,
-        suggested_trade_usd: float,
     ) -> TradeSignal:
         score = max(3, int(round(prediction.confidence * 10)))
         confidence = min(0.99, max(0.5, prediction.confidence))
         strength = RuleBasedSignalParser._strength_from_score(score)
         sell_fraction = None
         buy_conviction = None
+        portfolio_allocation_pct = None
         if prediction.action == SignalAction.SELL:
             sell_fraction = infer_sell_fraction(
                 raw_text,
@@ -145,6 +143,9 @@ class HybridSignalParser:
             )
         elif prediction.action == SignalAction.BUY:
             buy_conviction = infer_buy_conviction(raw_text)
+            portfolio_allocation_pct = infer_portfolio_allocation_pct(raw_text)
+        else:
+            portfolio_allocation_pct = None
 
         return TradeSignal(
             source_tweet_id=source_tweet_id,
@@ -154,14 +155,11 @@ class HybridSignalParser:
             strength=strength,
             score=score,
             raw_text=raw_text,
-            suggested_trade_usd=suggested_trade_usd,
+            suggested_trade_usd=0.0,
             sell_fraction=sell_fraction,
             buy_conviction=buy_conviction,
+            portfolio_allocation_pct=portfolio_allocation_pct,
         )
-
-    @property
-    def default_trade_size_usd(self) -> float:
-        return self._rules.default_trade_size_usd
 
     @property
     def known_tickers(self) -> set[str]:

@@ -115,7 +115,7 @@ def create_router(
             target_account=settings.target_account,
             poll_interval_seconds=settings.poll_interval_seconds,
             dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
-            default_trade_size_usd=settings.default_trade_size_usd,
+            default_buy_allocation_pct=settings.default_buy_allocation_pct,
             robinhood_logged_in=rh_logged_in,
             robinhood_auth_error=rh_error,
             robinhood_auth_retry_in_seconds=rh_retry,
@@ -443,7 +443,7 @@ def create_router(
                 target_account=settings.target_account,
                 poll_interval_seconds=settings.poll_interval_seconds,
                 dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
-                default_trade_size_usd=settings.default_trade_size_usd,
+                default_buy_allocation_pct=settings.default_buy_allocation_pct,
                 robinhood_logged_in=session.logged_in if session is not None else None,
                 robinhood_auth_error=session.last_error if session is not None else None,
                 robinhood_auth_retry_in_seconds=(

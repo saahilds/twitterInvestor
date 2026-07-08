@@ -51,13 +51,19 @@ class Settings(BaseSettings):
             "SPY",
         ]
     )
-    default_trade_size_usd: float = 1.0
-    max_trade_size_usd: float = 5.0
+    # Portfolio-relative sizing (% of account equity). Tweet allocation % overrides defaults.
+    default_buy_allocation_pct: float = 1.0
+    max_buy_allocation_pct: float = 10.0
+    standard_buy_allocation_pct_max: float = 2.0
+    reload_buy_allocation_pct_max: float = 5.0
+    thesis_buy_allocation_pct_min: float = 3.0
+    thesis_buy_allocation_pct_max: float = 7.0
+    min_trade_notional_pct: float = 0.01
+    min_trade_notional_usd: float = 1.0
+    cash_buffer_pct: float = 2.0
+    max_sell_notional_pct: float = 25.0
+    simulation_portfolio_usd: float = 10_000.0
     new_ticker_size_multiplier: float = 10.0
-    thesis_trade_min_usd: float = 500.0
-    thesis_trade_max_usd: float = 1000.0
-    cash_buffer_usd: float = 0.0
-    min_buy_notional_usd: float = 1.0
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
@@ -69,7 +75,6 @@ class Settings(BaseSettings):
     min_buy_confidence_unlisted: float = 0.0
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
-
     watchlist_stale_days: int = 30
     watchlist_max_conviction_score: float = 5.0
 
@@ -127,11 +132,11 @@ class Settings(BaseSettings):
             return 3600
         return value
 
-    @field_validator("max_trade_size_usd")
+    @field_validator("max_buy_allocation_pct")
     @classmethod
-    def validate_max_trade_size(cls, value: float) -> float:
+    def validate_max_buy_allocation(cls, value: float) -> float:
         if value <= 0:
-            raise ValueError("MAX_TRADE_SIZE_USD must be > 0")
+            raise ValueError("MAX_BUY_ALLOCATION_PCT must be > 0")
         return value
 
     @property

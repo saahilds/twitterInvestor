@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
+from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.text_normalize import extract_action_snippet
@@ -18,11 +19,9 @@ class RuleBasedSignalParser:
     def __init__(
         self,
         known_tickers: Iterable[str],
-        default_trade_size_usd: float = 1.0,
         default_sell_fraction: float = 1.0,
     ) -> None:
         self.known_tickers = {ticker.upper() for ticker in known_tickers}
-        self.default_trade_size_usd = default_trade_size_usd
         self.default_sell_fraction = default_sell_fraction
         self.cashtag_pattern = re.compile(r"\$([A-Za-z]{1,5})\b")
         self.bare_ticker_pattern = re.compile(r"\b([A-Z]{1,5})\b")
@@ -93,10 +92,12 @@ class RuleBasedSignalParser:
 
         sell_fraction = None
         buy_conviction = None
+        portfolio_allocation_pct = None
         if action == SignalAction.SELL:
             sell_fraction = infer_sell_fraction(raw_text, default_fraction=self.default_sell_fraction)
         elif action == SignalAction.BUY:
             buy_conviction = infer_buy_conviction(raw_text)
+            portfolio_allocation_pct = infer_portfolio_allocation_pct(raw_text)
 
         return TradeSignal(
             source_tweet_id=source_tweet_id,
@@ -106,9 +107,10 @@ class RuleBasedSignalParser:
             strength=self._strength_from_score(score),
             score=score,
             raw_text=raw_text,
-            suggested_trade_usd=self.default_trade_size_usd,
+            suggested_trade_usd=0.0,
             sell_fraction=sell_fraction,
             buy_conviction=buy_conviction,
+            portfolio_allocation_pct=portfolio_allocation_pct,
         )
 
     def _extract_ticker(self, raw_text: str, upper_text: str, known_tickers: set[str]) -> str | None:

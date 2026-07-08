@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.models.db_models import SignalAction, WatchlistEntry
 from app.parsing.watch_conviction import WatchConviction, infer_watch_conviction, watch_size_multiplier
-from app.risk.risk_manager import RiskConfig, RiskManager
+from app.risk.risk_manager import RiskManager
 from app.services.watchlist import WatchlistRegistry
 
 
@@ -54,21 +54,13 @@ def test_watchlist_prune_stale(db_session) -> None:
     assert registry.get("NEW", db_session, manager_id="individual") is not None
 
 
+from app.testing.risk_config import make_risk_config
+
+
 def test_risk_buy_boosted_by_watchlist(db_session) -> None:
     registry = WatchlistRegistry(max_conviction_score=5.0, stale_days=30)
     registry.upsert("NVDA", db_session, manager_id="individual", watch_conviction=WatchConviction.HEAVY)
-    manager = RiskManager(
-        RiskConfig(
-            seed_tickers={"NVDA"},
-            max_trade_size_usd=1000,
-            default_trade_size_usd=100,
-            new_ticker_size_multiplier=10,
-            cooldown_seconds=300,
-            duplicate_window_seconds=300,
-            trading_window_enabled=False,
-        ),
-        watchlist=registry,
-    )
+    manager = RiskManager(make_risk_config(seed_tickers={"NVDA"}), watchlist=registry)
     from app.models.schemas import TradeSignal
     from app.parsing.buy_conviction import BuyConviction
 
@@ -80,8 +72,16 @@ def test_risk_buy_boosted_by_watchlist(db_session) -> None:
         raw_text="adding NVDA",
         buy_conviction=BuyConviction.RELOAD,
     )
-    result = manager.evaluate(signal, db_session, manager_id="individual", cash_available_usd=5000.0)
+    portfolio = 10_000.0
+    result = manager.evaluate(
+        signal,
+        db_session,
+        manager_id="individual",
+        cash_available_usd=portfolio,
+        portfolio_value_usd=portfolio,
+    )
     assert result.allowed
-    base = 100 + ((1000 * 0.75) - 100) * ((0.81 - 0.5) / 0.49)
+    base_pct = 1.0 + (5.0 - 1.0) * ((0.81 - 0.5) / 0.49)
+    base = portfolio * base_pct / 100.0
     boost = watch_size_multiplier(WatchConviction.HEAVY, 2.0)
-    assert result.normalized_trade_usd == round(min(1000, base * boost), 2)
+    assert result.normalized_trade_usd == round(base * boost, 2)

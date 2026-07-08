@@ -84,12 +84,15 @@ class AccountManager:
             )
 
         cash_available_usd = None
+        portfolio_value_usd = self.settings.simulation_portfolio_usd
         holding: BrokerHolding | None = None
         if isinstance(self.broker, RobinhoodBroker):
             if signal.action == SignalAction.BUY:
                 cash_available_usd = await asyncio.to_thread(self.broker.get_cash_available_usd)
+                portfolio_value_usd = await self._fetch_portfolio_value()
             elif signal.action == SignalAction.SELL and signal.ticker:
                 holding = await self._fetch_holding(signal.ticker)
+                portfolio_value_usd = await self._fetch_portfolio_value()
 
         with self.session_factory() as db:
             risk_result = self.risk_manager.evaluate(
@@ -97,6 +100,7 @@ class AccountManager:
                 db,
                 manager_id=self.id,
                 cash_available_usd=cash_available_usd,
+                portfolio_value_usd=portfolio_value_usd,
                 holding=holding,
             )
             parsed_signal = ParsedSignal(
@@ -128,7 +132,7 @@ class AccountManager:
                     rejection_reason=risk_result.reason,
                 )
 
-        trade_amount = risk_result.normalized_trade_usd or self.settings.default_trade_size_usd
+        trade_amount = risk_result.normalized_trade_usd or 0.0
         sell_quantity = risk_result.sell_quantity
 
         if signal.action == SignalAction.SELL:
@@ -362,12 +366,31 @@ class AccountManager:
         if holding is None or holding.quantity <= 0:
             return None
 
+        portfolio_value = await self._fetch_portfolio_value()
+        from app.risk.portfolio_sizing import resolve_max_sell_notional_usd
+
+        max_sell_notional = max(
+            self.risk_manager.config.min_sell_notional_usd,
+            resolve_max_sell_notional_usd(
+                portfolio_value,
+                self.risk_manager.config.max_sell_notional_pct,
+            ),
+        )
         return resolve_sell_order(
             holding,
             sell_fraction,
-            max_trade_size_usd=self.risk_manager.config.max_trade_size_usd,
+            max_trade_size_usd=max_sell_notional,
             min_trade_notional_usd=self.risk_manager.config.min_sell_notional_usd,
         )
+
+    async def _fetch_portfolio_value(self) -> float:
+        if isinstance(self.broker, RobinhoodBroker):
+            metrics = await asyncio.to_thread(self.broker.get_portfolio_metrics)
+            if metrics.stocks_plus_cash is not None and metrics.stocks_plus_cash > 0:
+                return metrics.stocks_plus_cash
+            if metrics.portfolio_equity is not None and metrics.portfolio_equity > 0:
+                return metrics.portfolio_equity
+        return self.settings.simulation_portfolio_usd
 
     async def _fetch_holding(self, ticker: str) -> BrokerHolding | None:
         if not isinstance(self.broker, RobinhoodBroker):

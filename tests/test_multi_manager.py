@@ -10,7 +10,8 @@ from app.config.settings import Settings
 from app.execution.mock_broker import MockBroker
 from app.models.db_models import ParsedSignal, SignalAction, Trade, Tweet
 from app.models.schemas import IngestedTweet, TradeSignal
-from app.risk.risk_manager import RiskConfig, RiskManager
+from app.risk.risk_manager import RiskManager
+from app.testing.risk_config import make_risk_config
 from app.services.account_manager import AccountManager
 
 
@@ -74,14 +75,10 @@ async def test_same_tweet_can_trade_on_two_managers(db_session) -> None:
         suggested_trade_usd=1.0,
     )
 
-    risk_config = RiskConfig(
+    risk_config = make_risk_config(
         seed_tickers={"NVDA"},
-        max_trade_size_usd=5,
-        default_trade_size_usd=1,
-        new_ticker_size_multiplier=10,
         cooldown_seconds=0,
         duplicate_window_seconds=0,
-        trading_window_enabled=False,
     )
 
     def _manager(manager_id: str) -> AccountManager:
@@ -153,14 +150,10 @@ async def test_duplicate_tweet_blocked_per_manager_not_globally(db_session) -> N
         suggested_trade_usd=1.0,
     )
 
-    risk_config = RiskConfig(
+    risk_config = make_risk_config(
         seed_tickers={"NVDA"},
-        max_trade_size_usd=5,
-        default_trade_size_usd=1,
-        new_ticker_size_multiplier=10,
         cooldown_seconds=0,
         duplicate_window_seconds=0,
-        trading_window_enabled=False,
     )
 
     broker = MockBroker()

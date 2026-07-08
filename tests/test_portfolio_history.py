@@ -144,8 +144,9 @@ def test_aggregate_daily_chart_points_uses_last_reading_per_day() -> None:
 
 def test_build_chart_all_range_uses_earliest_snapshot() -> None:
     db = _session()
-    old = _et_today_at(11, 0) - timedelta(days=45)
-    recent = _et_today_at(15, 0)
+    now = datetime.now(timezone.utc)
+    recent = now - timedelta(hours=2)
+    old = recent - timedelta(days=45)
     db.add(
         AccountSnapshot(
             account_number=None,

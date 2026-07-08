@@ -3,13 +3,21 @@ from app.parsing.signal_parser import RuleBasedSignalParser
 
 
 def test_parser_detects_buy_signal() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["NVDA", "TSLA"], default_trade_size_usd=1.5)
+    parser = RuleBasedSignalParser(known_tickers=["NVDA", "TSLA"])
     signal = parser.parse("adding NVDA starter", source_tweet_id="1")
 
     assert signal.action == SignalAction.BUY
     assert signal.ticker == "NVDA"
-    assert signal.suggested_trade_usd == 1.5
+    assert signal.suggested_trade_usd == 0.0
     assert signal.confidence > 0
+
+
+def test_parser_extracts_port_allocation_on_buy() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["RDDT"])
+    signal = parser.parse("Added 2% port in $RDDT for a swing", source_tweet_id="rddt")
+
+    assert signal.action == SignalAction.BUY
+    assert signal.portfolio_allocation_pct == 2.0
 
 
 def test_parser_detects_sell_signal() -> None:
@@ -61,7 +69,7 @@ $AAOI
 
 
 def test_parser_prefers_action_cashtag_over_allowlisted_thesis_symbol() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["AMD", "MSFT"], default_trade_size_usd=1.0)
+    parser = RuleBasedSignalParser(known_tickers=["AMD", "MSFT"])
     text = (
         "adding $ZZZZ starter. Here is the thesis. "
         "$AMD and $MSFT license patents from $ZZZZ."
@@ -91,7 +99,7 @@ def test_parser_ignores_future_tense_sell() -> None:
 
 
 def test_parser_took_position_is_buy_not_sells_off_false_positive() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"], default_trade_size_usd=1.0)
+    parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"])
     signal = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")
 
     assert signal.action == SignalAction.BUY
