@@ -17,6 +17,10 @@ logs/
 .playwright/
 data/*
 !data/.gitkeep
+!data/labeled_signals.jsonl
+!data/models/
+!data/models/.gitkeep
+!data/models/*.joblib
 
 # OS / editor
 .DS_Store

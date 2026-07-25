@@ -152,25 +152,26 @@ class BotOrchestrator:
                     )
 
         for tweet in new_tweets:
-            signal = self.parser.parse(
+            signals = self.parser.parse(
                 tweet.text,
                 source_tweet_id=tweet.tweet_id,
                 extra_known_tickers=known_tickers,
             )
-            if signal.action == SignalAction.IGNORE:
-                continue
+            for signal in signals:
+                if signal.action == SignalAction.IGNORE:
+                    continue
 
-            if signal.action == SignalAction.WATCH:
+                if signal.action == SignalAction.WATCH:
+                    for manager in self.managers:
+                        if not manager.config.enabled:
+                            continue
+                        await manager.record_watch(signal, tweet)
+                    continue
+
                 for manager in self.managers:
                     if not manager.config.enabled:
                         continue
-                    await manager.record_watch(signal, tweet)
-                continue
-
-            for manager in self.managers:
-                if not manager.config.enabled:
-                    continue
-                await manager.evaluate_and_execute(signal, tweet)
+                    await manager.evaluate_and_execute(signal, tweet)
 
 
 # Backward-compatible alias used in older tests/imports.

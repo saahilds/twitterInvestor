@@ -12,7 +12,10 @@ Minimal, reliability-first trading bot that watches one Twitter/X account, parse
 - Stores raw tweets in SQLite and deduplicates by tweet ID
 - Rule-based parsing using regex + keyword scoring
 - Basic risk controls: recognized ticker registry (auto-grows), max trade size, cooldown, duplicate prevention
+- Multi-ticker tweets become multiple trades (e.g. add INTC + META, trim ADEA in one post)
 - Conviction-based buy sizing as **% of portfolio equity**: tweet allocation % (e.g. `2% port`, `5% weight`) when stated; otherwise standard/reload/thesis tiers scaled by confidence (capped by cash, never margin)
+- Weekly human review loop for ambiguous/low-confidence tweets → retrain classifier
+
 - Broker interface with Robinhood + mock implementations
 - Structured logging to console and rotating file logs
 - FastAPI endpoints for health, tweets, signals, trades, pause/resume
@@ -363,6 +366,30 @@ curl "http://127.0.0.1:8000/signals?limit=50"
 7. Use `POST /pause` to stop new orders immediately — see [Terminal commands — Pause / resume](#pause--resume).
 
 BUY signals place a **limit buy at the ask** (or fractional market per `ORDER_EXECUTION_MODE`). **SELL** signals sell a **fraction of the live position** (trim ≈ 25%, half = 50%, closed/sell = 100%, or explicit `%` in the tweet) only when the ticker is held in Robinhood. Guards: US symbols only, market hours, one trade per tweet, one per ticker per US day, 5-minute cooldown.
+
+## Weekly signal labeling
+
+Once a week, review ambiguous tweets and feed truth labels back into the model:
+
+```bash
+# Export review queue (default: last 7 days, max 25 rows)
+uv run python -m app.scripts.weekly_review
+
+# Edit data/reviews/review-YYYY-MM-DD.jsonl → set truth_action (BUY/SELL/WATCH/IGNORE)
+uv run python -m app.scripts.ingest_labels data/reviews/review-YYYY-MM-DD.jsonl
+
+# Or label interactively:
+uv run python -m app.scripts.weekly_review --interactive
+
+# Retrain + print before/after metrics
+uv run python -m app.scripts.retrain_from_labels
+
+# Metrics / threshold sweep
+uv run python -m app.scripts.eval_classifier --cv
+uv run python -m app.scripts.eval_classifier --sweep
+```
+
+Optional weak labels from filled live trades: `uv run python -m app.scripts.outcome_weak_labels --apply`.
 
 ## Local Mac schedule (8 AM – 6 PM ET)
 

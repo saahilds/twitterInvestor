@@ -14,7 +14,11 @@ _STARTING_ALLOC = re.compile(
     re.IGNORECASE,
 )
 _ADDITION_PORT = re.compile(
-    r"(?:addition|added)\s+(?:an?\s+)?(\d+(?:\.\d+)?)\s*%\s*port",
+    r"(?:addition|added|adding|add)\s+(?:an?\s+)?(\d+(?:\.\d+)?)\s*%\s*port",
+    re.IGNORECASE,
+)
+_ENTERED_WEIGHT = re.compile(
+    r"(?:entered|entering|at)\s+a\s+(\d+(?:\.\d+)?)\s*%\s*weight",
     re.IGNORECASE,
 )
 
@@ -22,7 +26,7 @@ _ADDITION_PORT = re.compile(
 def infer_portfolio_allocation_pct(text: str) -> float | None:
     """Extract an explicit portfolio allocation % from a buy tweet, if present."""
     snippet = extract_action_snippet(text)
-    for pattern in (_ADDITION_PORT, _STARTING_ALLOC, _PORTFOLIO_ALLOC):
+    for pattern in (_ADDITION_PORT, _STARTING_ALLOC, _ENTERED_WEIGHT, _PORTFOLIO_ALLOC):
         match = pattern.search(snippet)
         if match is None:
             match = pattern.search(text)

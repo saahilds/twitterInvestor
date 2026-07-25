@@ -28,9 +28,13 @@ def build_signal_parser(settings: Settings) -> RuleBasedSignalParser | HybridSig
             known_tickers=known,
             default_sell_fraction=sell_fraction_default,
         )
+    from app.parsing.ml_action_classifier import ActionClassifier
+
+    classifier = ActionClassifier.load() or ActionClassifier.train()
     return HybridSignalParser(
         known_tickers=known,
         default_sell_fraction=sell_fraction_default,
+        action_classifier=classifier,
         ml_min_confidence=settings.signal_ml_min_confidence,
         ml_min_margin=settings.signal_ml_min_margin,
     )

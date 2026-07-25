@@ -34,5 +34,10 @@ def test_rejects_havent_sold_commentary() -> None:
     assert not is_affirmative_sell_intent(text)
 
 
+def test_rejects_future_tense_trim() -> None:
+    text = "Digging into margin here so will look to trim somewhere else today."
+    assert not is_affirmative_sell_intent(text)
+
+
 def test_accepts_trimmed() -> None:
     assert is_affirmative_sell_intent("trimmed META today")

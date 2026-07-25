@@ -157,8 +157,13 @@ class RiskManager:
             if normalized_trade <= 0 or normalized_trade < min_notional:
                 return RiskCheckResult(allowed=False, reason="insufficient_cash")
 
-        if self._tweet_already_traded(signal.source_tweet_id, db, manager_id=manager_id):
-            return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}")
+        if self._tweet_already_traded(
+            signal.source_tweet_id,
+            db,
+            manager_id=manager_id,
+            ticker=ticker,
+        ):
+            return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}:{ticker}")
 
         if self._daily_ticker_limit_reached(ticker, db, manager_id=manager_id):
             return RiskCheckResult(allowed=False, reason=f"daily_limit:{ticker}")
@@ -278,16 +283,24 @@ class RiskManager:
             return "reload_sized"
         return "standard_sized"
 
-    def _tweet_already_traded(self, source_tweet_id: str, db: Session, *, manager_id: str) -> bool:
+    def _tweet_already_traded(
+        self,
+        source_tweet_id: str,
+        db: Session,
+        *,
+        manager_id: str,
+        ticker: str | None = None,
+    ) -> bool:
+        conditions = [
+            ParsedSignal.source_tweet_id == source_tweet_id,
+            Trade.manager_id == manager_id,
+        ]
+        if ticker:
+            conditions.append(Trade.ticker == ticker.upper())
         existing = db.execute(
             select(Trade.id)
             .join(ParsedSignal, Trade.parsed_signal_id == ParsedSignal.id)
-            .where(
-                and_(
-                    ParsedSignal.source_tweet_id == source_tweet_id,
-                    Trade.manager_id == manager_id,
-                )
-            )
+            .where(and_(*conditions))
             .limit(1)
         ).scalar_one_or_none()
         return existing is not None

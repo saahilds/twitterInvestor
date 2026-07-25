@@ -68,8 +68,8 @@ class Settings(BaseSettings):
     duplicate_window_seconds: int = 300
 
     signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
-    signal_ml_min_confidence: float = 0.42
-    signal_ml_min_margin: float = 0.08
+    signal_ml_min_confidence: float = 0.35
+    signal_ml_min_margin: float = 0.06
     # 0 = disabled. When > 0, BUY for tickers outside ALLOWED_TICKERS / recognized_tickers
     # requires parser confidence at least this high (keyword + hybrid signals set confidence).
     min_buy_confidence_unlisted: float = 0.0

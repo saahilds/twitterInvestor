@@ -24,9 +24,12 @@ _SELL_COMMENTARY = (
 # Conditional / future tense — not an executed sell alert.
 _SELL_HYPOTHETICAL = (
     r"\bwill look to sell\b",
+    r"\bwill look to trim\b",
     r"\bwill possibly look to sell\b",
     r"\blook to sell\b",
+    r"\blook to trim\b",
     r"\bwill sell\b",
+    r"\bwill trim\b",
     r"\bmight sell\b",
     r"\bpossibly sell\b",
     r"\bplan to sell\b",
@@ -95,21 +98,20 @@ def is_affirmative_sell_intent(text: str) -> bool:
 
     if sell_suppressed_by_watch(text):
         return False
-
     if _matches_any(_SELL_COMMENTARY, snippet):
         return False
 
-    if _matches_any(_AFFIRMATIVE_SELL, snippet):
-        return True
+    # Remove future/conditional phrases so "will look to trim" does not
+    # false-trigger on the bare "trim" token, while still allowing
+    # "Trimming $ADEA … will look to trim elsewhere" to count as a sell.
+    cleaned = snippet
+    for pattern in _SELL_HYPOTHETICAL:
+        cleaned = re.sub(pattern, " ", cleaned)
 
-    if _matches_any(_PREEMPTIVE_SELL, snippet):
+    if _matches_any(_AFFIRMATIVE_SELL, cleaned):
         return True
-
+    if _matches_any(_PREEMPTIVE_SELL, cleaned):
+        return True
     if _matches_any(_SELL_HYPOTHETICAL, snippet):
         return False
-
-    # Bare "sell" without past-tense confirmation is not enough.
-    if re.search(r"\bsell\b", snippet) and not re.search(r"\bsold\b", snippet):
-        return False
-
     return False

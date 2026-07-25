@@ -125,3 +125,19 @@ class ExecutionLog(Base):
     message: Mapped[str] = mapped_column(String(255))
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class TweetLabel(Base):
+    """Human ground-truth labels (distinct from parsed_signals predictions)."""
+
+    __tablename__ = "tweet_labels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tweet_id: Mapped[str] = mapped_column(String(64), index=True)
+    ticker: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    segment_text: Mapped[str] = mapped_column(Text)
+    allocation_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sell_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    labeled_by: Mapped[str] = mapped_column(String(64), default="human")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

@@ -13,5 +13,9 @@ def test_infer_trim_default() -> None:
     assert infer_sell_fraction("trimmed $AMD today") == 0.25
 
 
+def test_infer_from_to_portfolio_weight() -> None:
+    assert infer_sell_fraction("Trimming $ADEA from 5% to 4%") == 0.2
+
+
 def test_infer_full_sell_default() -> None:
     assert infer_sell_fraction("closed $TSLA") == 1.0

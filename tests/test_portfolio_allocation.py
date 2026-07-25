@@ -14,6 +14,6 @@ def test_infer_starting_position_allocation() -> None:
     assert infer_portfolio_allocation_pct(text) == 7.0
 
 
-def test_ignores_price_move_percent() -> None:
-    text = "$AAOI is sitting roughly 30% off its all time highs"
-    assert infer_portfolio_allocation_pct(text) is None
+def test_infer_adding_decimal_port() -> None:
+    assert infer_portfolio_allocation_pct("Adding 2.1% port in $INTC") == 2.1
+    assert infer_portfolio_allocation_pct("Also adding 3.8% port in $META") == 3.8

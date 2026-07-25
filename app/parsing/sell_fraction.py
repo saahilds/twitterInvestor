@@ -4,6 +4,10 @@ import re
 
 from app.parsing.text_normalize import extract_action_snippet
 
+_FROM_TO_WEIGHT = re.compile(
+    r"from\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)\s+to\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
+    re.IGNORECASE,
+)
 _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|percent|pct)\b", re.IGNORECASE)
 _WORD_FRACTIONS: tuple[tuple[str, float], ...] = (
     ("three quarters", 0.75),
@@ -46,6 +50,14 @@ _PHRASE_DEFAULTS: tuple[tuple[str, float], ...] = (
 def infer_sell_fraction(text: str, *, default_fraction: float = 1.0) -> float:
     """Map sell tweet wording to a fraction of the open position (0–1)."""
     snippet = extract_action_snippet(text).lower()
+    full = text.lower()
+
+    from_to = _FROM_TO_WEIGHT.search(snippet) or _FROM_TO_WEIGHT.search(full)
+    if from_to is not None:
+        start_pct = float(from_to.group(1))
+        end_pct = float(from_to.group(2))
+        if start_pct > end_pct > 0:
+            return min(1.0, max(0.0, (start_pct - end_pct) / start_pct))
 
     for match in _PERCENT.finditer(snippet):
         pct = float(match.group(1))
