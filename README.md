@@ -236,7 +236,7 @@ VPS (Docker):
 
 - **JSON snapshot:** `GET /dashboard/data`, `GET /portfolio/pnl`
 
-The dashboard shows bot status, Robinhood holdings, P&amp;L by ticker, recent tweets/trades, and pause/resume controls.
+The dashboard shows bot status, Robinhood holdings, P&amp;L by ticker, today's digest, recent tweets/trades (with Wrong-label buttons), and pause/resume controls.
 
 ### Account balance (Robinhood)
 
@@ -296,6 +296,24 @@ uv run python -m app.cli.backfill --since 2026-01-01
 ```bash
 uv run pytest
 ```
+
+### Parser replay / feedback / daily digest
+
+```bash
+# Re-run parser (+ risk) over stored tweets; --compare-stored shows drift vs historical decisions
+uv run python -m app.cli.replay --since 2026-01-01 --compare-stored
+uv run python -m app.cli.replay --only-mismatches --assume-cash 5000 --json
+
+# Export Wrong-labels from the dashboard (training only — does not affect live orders)
+uv run python -m app.cli.export_feedback --out data/feedback.jsonl
+uv run python -m app.cli.export_feedback --apply
+
+# Rebuild / finalize progressive daily digest (DB rollup only; no X or Robinhood fetch)
+uv run python -m app.cli.daily_summary --date 2026-07-24
+uv run python -m app.cli.daily_summary --finalize
+```
+
+Daily digest summarizes **trade alerts** (BUY/SELL) and **executed trades** only — rebuilt from the DB through the day. Evening pause finalizes at 8 PM ET (`POST /digest/finalize`). Optional webhook: set `ALERT_WEBHOOK_URL`.
 
 ### Inspect DB / API
 
@@ -439,4 +457,4 @@ Deploy steps:
 
 - This is an MVP for controlled experimentation, not institutional-grade infrastructure.
 - Start in simulation and inspect logs + DB records before enabling live mode.
-- TODO: add stronger auth/session handling for Robinhood, richer parser rules, and replay/backtesting tooling.
+- TODO: add stronger auth/session handling for Robinhood and open-order lifecycle tooling.

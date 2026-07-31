@@ -76,6 +76,7 @@ class RiskManager:
         cash_available_usd: float | None = None,
         portfolio_value_usd: float | None = None,
         holding: BrokerHolding | None = None,
+        as_of: datetime | None = None,
     ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
@@ -101,7 +102,7 @@ class RiskManager:
         if self.config.us_symbols_only and not _is_us_symbol(ticker):
             return RiskCheckResult(allowed=False, reason=f"non_us_symbol:{ticker}")
 
-        if self.config.trading_window_enabled and not is_within_regular_market_hours():
+        if self.config.trading_window_enabled and not is_within_regular_market_hours(as_of):
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
 
         portfolio = resolve_portfolio_value(

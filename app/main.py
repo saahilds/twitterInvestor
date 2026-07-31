@@ -19,7 +19,9 @@ from app.parsing.factory import build_signal_parser
 from app.risk.risk_manager import RiskConfig, RiskManager
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 from app.services.account_manager import AccountManager
+from app.services.alerts import AlertService
 from app.services.audit import ExecutionAuditLogger
+from app.services.daily_digest import DailyDigestService
 from app.services.watchlist import WatchlistRegistry
 from app.portfolio.quotes import QuoteProvider
 from app.services.pnl_service import PnlService
@@ -31,6 +33,18 @@ logger = build_logger(settings)
 
 init_db()
 
+alert_service = AlertService(
+    webhook_url=settings.alert_webhook_url,
+    enabled=settings.alert_enabled,
+    on_live_trades=settings.alert_on_live_trades,
+    on_rejected_signals=settings.alert_on_rejected_signals,
+    rejected_reasons=settings.alert_rejected_reasons,
+    on_worker_errors=settings.alert_on_worker_errors,
+    cooldown_seconds=settings.alert_cooldown_seconds,
+    logger=logger,
+)
+digest_service = DailyDigestService(SessionLocal)
+
 twitter_client = build_twitter_client(settings, logger)
 ingestion_service = build_ingestion_service(
     settings=settings,
@@ -38,6 +52,8 @@ ingestion_service = build_ingestion_service(
     session_factory=SessionLocal,
     logger=logger,
 )
+if hasattr(ingestion_service, "alert_service"):
+    ingestion_service.alert_service = alert_service
 
 parser = build_signal_parser(settings)
 audit_logger = ExecutionAuditLogger(session_factory=SessionLocal, logger=logger)
@@ -93,10 +109,11 @@ if settings.broker_backend == "mock":
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=None,
+                alert_service=alert_service,
             )
         )
 else:
-    rh_session = RobinhoodSessionManager(settings=settings, logger=logger)
+    rh_session = RobinhoodSessionManager(settings=settings, logger=logger, alert_service=alert_service)
     for cfg in manager_configs:
         broker = RobinhoodBroker(
             settings=settings,
@@ -116,6 +133,7 @@ else:
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=trade_status,
+                alert_service=alert_service,
             )
         )
 
@@ -139,6 +157,8 @@ orchestrator = BotOrchestrator(
     session_factory=SessionLocal,
     audit_logger=audit_logger,
     logger=logger,
+    alert_service=alert_service,
+    digest_service=digest_service,
 )
 
 
@@ -186,5 +206,6 @@ app.include_router(
         pnl_service=pnl_service,
         brokers_by_manager=brokers_by_manager,
         rh_session=rh_session,
+        digest_service=digest_service,
     )
 )

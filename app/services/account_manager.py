@@ -18,6 +18,7 @@ from app.risk.risk_manager import RiskManager
 from app.risk.sell_sizing import SellOrderSizing, resolve_sell_order
 from app.services.trade_recorder import create_trade_record
 from app.services.trade_status import TradeStatusSync, trade_is_terminal
+from app.services.alerts import AlertService
 
 
 @dataclass(slots=True)
@@ -41,6 +42,7 @@ class AccountManager:
         session_factory: Callable[[], Session],
         logger: logging.Logger,
         trade_status_sync: TradeStatusSync | None = None,
+        alert_service: AlertService | None = None,
     ) -> None:
         self.config = config
         self.settings = settings
@@ -49,6 +51,7 @@ class AccountManager:
         self.session_factory = session_factory
         self.logger = logger
         self.trade_status_sync = trade_status_sync
+        self.alert_service = alert_service
         self._paused = False
 
     @property
@@ -125,6 +128,35 @@ class AccountManager:
             db.commit()
 
             if not risk_result.allowed:
+                if signal.action not in {SignalAction.IGNORE, SignalAction.WATCH}:
+                    self.logger.info(
+                        "signal_rejected",
+                        extra={
+                            "event_type": "signal_rejected",
+                            "manager_id": self.id,
+                            "tweet_id": tweet.tweet_id,
+                            "ticker": signal.ticker,
+                            "action": signal.action.value,
+                            "reason": risk_result.reason,
+                            "portfolio_allocation_pct": signal.portfolio_allocation_pct,
+                            "portfolio_value_usd": portfolio_value_usd,
+                            "normalized_trade_usd": risk_result.normalized_trade_usd,
+                        },
+                    )
+                    if self.alert_service and self.alert_service.should_alert_rejection(
+                        risk_result.reason
+                    ):
+                        await self.alert_service.send(
+                            "signal_rejected",
+                            {
+                                "manager_id": self.id,
+                                "tweet_id": tweet.tweet_id,
+                                "ticker": signal.ticker,
+                                "action": signal.action.value,
+                                "reason": risk_result.reason,
+                            },
+                            key=f"{self.id}:{signal.ticker}:{risk_result.reason}",
+                        )
                 return ManagerExecutionResult(
                     manager_id=self.id,
                     parsed_signal_id=parsed_signal_id,
@@ -235,8 +267,54 @@ class AccountManager:
                     "trade_id": trade.id,
                     "is_new_ticker": risk_result.is_new_ticker,
                     "sell_fraction": risk_result.sell_fraction,
+                    "portfolio_allocation_pct": signal.portfolio_allocation_pct,
+                    "portfolio_value_usd": portfolio_value_usd,
+                    "buy_conviction": (
+                        signal.buy_conviction.value if signal.buy_conviction else None
+                    ),
+                    "normalized_trade_usd": trade_amount,
                 },
             )
+            if (
+                self.alert_service
+                and not order_result.simulation
+                and self.alert_service.on_live_trades
+            ):
+                await self.alert_service.send(
+                    "live_order_submitted",
+                    {
+                        "manager_id": self.id,
+                        "tweet_id": tweet.tweet_id,
+                        "ticker": signal.ticker,
+                        "action": signal.action.value,
+                        "amount_usd": trade_amount,
+                        "status": order_result_status,
+                    },
+                    key=f"trade:{trade.id}",
+                )
+        else:
+            self.logger.info(
+                "trade_failed",
+                extra={
+                    "event_type": "trade_failed",
+                    "manager_id": self.id,
+                    "tweet_id": tweet.tweet_id,
+                    "ticker": signal.ticker,
+                    "action": signal.action.value,
+                    "error": order_result.error_message,
+                },
+            )
+            if self.alert_service and self.alert_service.on_worker_errors:
+                await self.alert_service.send(
+                    "trade_failed",
+                    {
+                        "manager_id": self.id,
+                        "ticker": signal.ticker,
+                        "action": signal.action.value,
+                        "error": order_result.error_message,
+                    },
+                    key=f"fail:{self.id}:{tweet.tweet_id}",
+                )
 
         if order_result.status != "failed" and signal.ticker:
             with self.session_factory() as db:

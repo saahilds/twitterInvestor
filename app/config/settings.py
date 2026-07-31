@@ -106,6 +106,29 @@ class Settings(BaseSettings):
     pnl_include_simulation: bool = True
     pnl_quote_cache_seconds: int = 60
 
+    alert_webhook_url: str | None = None
+    alert_enabled: bool = True
+    alert_on_live_trades: bool = True
+    alert_on_rejected_signals: bool = False
+    alert_rejected_reasons: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "insufficient_cash",
+            "not_in_portfolio",
+            "insufficient_cash_data",
+        ]
+    )
+    alert_on_worker_errors: bool = True
+    alert_cooldown_seconds: int = 60
+
+    snapshot_enabled: bool = True
+    snapshot_interval_seconds: int = 300
+
+    daily_digest_enabled: bool = True
+    daily_digest_live_update: bool = True
+    daily_digest_send_webhook: bool = True
+    daily_digest_webhook_on_checkpoints: bool = False
+    daily_digest_rebuild_interval_seconds: int = 300
+
     @field_validator("allowed_tickers", mode="before")
     @classmethod
     def parse_allowed_tickers(cls, value: object) -> list[str]:
@@ -118,6 +141,25 @@ class Settings(BaseSettings):
     @field_validator("playwright_cdp_url", mode="before")
     @classmethod
     def normalize_playwright_cdp_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("alert_rejected_reasons", mode="before")
+    @classmethod
+    def parse_alert_rejected_reasons(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, list):
+            return [str(part).strip() for part in value if str(part).strip()]
+        raise ValueError("ALERT_REJECTED_REASONS must be a comma-separated string or list")
+
+    @field_validator("alert_webhook_url", mode="before")
+    @classmethod
+    def normalize_alert_webhook_url(cls, value: object) -> str | None:
         if value is None:
             return None
         text = str(value).strip()

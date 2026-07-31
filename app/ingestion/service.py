@@ -51,6 +51,7 @@ class TweetIngestionService:
         self.ignore_replies = ignore_replies
         self.ignore_retweets = ignore_retweets
         self.logger = logger
+        self.alert_service = None
 
     async def poll(self) -> list[IngestedTweet]:
         """Fetch account tweets and persist only unseen messages."""
@@ -61,8 +62,13 @@ class TweetIngestionService:
             )
         except Exception as exc:
             self.logger.exception("tweet_fetch_failed", extra={"error": str(exc)})
+            if self.alert_service is not None:
+                await self.alert_service.send(
+                    "tweet_fetch_failed",
+                    {"error": str(exc)},
+                    key="tweet_fetch_failed",
+                )
             return []
-
         stats = self._persist_payloads(payloads)
         return stats.inserted
 

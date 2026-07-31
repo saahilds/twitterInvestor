@@ -138,6 +138,45 @@ class DashboardTweetRead(TweetRead):
     signal_ticker: str | None = None
     signal_confidence: float | None = None
     signal_rejection_reason: str | None = None
+    buy_conviction: str | None = None
+    traded: bool = False
+    trade_status: str | None = None
+    trade_amount_usd: float | None = None
+    feedback_correct_action: str | None = None
+
+
+class ParserFeedbackCreate(BaseModel):
+    tweet_id: str
+    correct_action: SignalAction
+    note: str | None = None
+
+
+class ParserFeedbackRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tweet_id: str
+    tweet_text: str
+    parser_action: SignalAction
+    parser_ticker: str | None
+    correct_action: SignalAction
+    note: str | None
+    created_at: datetime
+    exported_at: datetime | None
+
+
+class DailyDigestRead(BaseModel):
+    digest_date: str
+    status: str
+    current_period: str
+    summary_markdown: str = ""
+    periods: dict = Field(default_factory=dict)
+    trades_day: list[str] = Field(default_factory=list)
+    rejected_day: list[str] = Field(default_factory=list)
+    informational_day: list[str] = Field(default_factory=list)
+    stats: dict = Field(default_factory=dict)
+    last_rebuilt_at: str | None = None
+    completed_at: str | None = None
 
 
 class WorkerControlResponse(BaseModel):
@@ -284,3 +323,4 @@ class DashboardSnapshot(BaseModel):
     worker_last_error: str | None = None
     active_manager: str | None = None
     managers: list[ManagerStateSnapshot] = Field(default_factory=list)
+    daily_digest: DailyDigestRead | None = None

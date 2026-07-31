@@ -95,7 +95,7 @@ def fetch_dashboard_tweets(
     capped = min(max(limit, 1), MAX_TWEET_LIMIT)
     stmt = (
         select(Tweet)
-        .options(selectinload(Tweet.parsed_signals))
+        .options(selectinload(Tweet.parsed_signals).selectinload(ParsedSignal.trades))
         .where(Tweet.posted_at <= until)
     )
     if since is not None:

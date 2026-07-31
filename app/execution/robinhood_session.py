@@ -45,12 +45,17 @@ class _SessionState:
 class RobinhoodSessionManager:
     """Single-flight Robinhood login with cooldowns after failures / 429s."""
 
-    def __init__(self, settings: Settings, logger: logging.Logger) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        logger: logging.Logger,
+        alert_service: object | None = None,
+    ) -> None:
         self.settings = settings
         self.logger = logger
+        self.alert_service = alert_service
         self._lock = threading.RLock()
         self._state = _SessionState()
-
     def snapshot(self) -> SessionSnapshot:
         with self._lock:
             return SessionSnapshot(
@@ -116,6 +121,16 @@ class RobinhoodSessionManager:
                     "consecutive_failures": self._state.consecutive_failures,
                 },
             )
+            if self.alert_service is not None and getattr(
+                self.alert_service, "on_worker_errors", True
+            ):
+                send_sync = getattr(self.alert_service, "send_sync", None)
+                if callable(send_sync):
+                    send_sync(
+                        "robinhood_auth_failed",
+                        {"error": self._state.last_error},
+                        key=self._state.last_error or "auth",
+                    )
             return self._state.last_error
 
     def _perform_login(self) -> tuple[bool, str | None]:

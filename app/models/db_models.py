@@ -141,3 +141,38 @@ class TweetLabel(Base):
     sell_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
     labeled_by: Mapped[str] = mapped_column(String(64), default="human")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ParserFeedback(Base):
+    """Dashboard Wrong-label corrections for training (does not affect live orders)."""
+
+    __tablename__ = "parser_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tweet_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    tweet_text: Mapped[str] = mapped_column(Text)
+    parser_action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    parser_ticker: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    correct_action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DailyDigest(Base):
+    """Progressive intraday digest rebuilt from existing DB rows only."""
+
+    __tablename__ = "daily_digests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    digest_date: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="in_progress", index=True)
+    current_period: Mapped[str] = mapped_column(String(32), default="premarket")
+    periods_json: Mapped[str] = mapped_column(Text, default="{}")
+    tweet_count: Mapped[int] = mapped_column(Integer, default=0)
+    trade_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    informational_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_rebuilt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    webhook_checkpoints_json: Mapped[str] = mapped_column(Text, default="{}")

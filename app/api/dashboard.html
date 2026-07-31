@@ -569,9 +569,21 @@
         </div>
       </section>
 
+      <section class="section" aria-label="Daily digest">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Today's digest</h2>
+            <span class="hint" id="digestStatus">—</span>
+          </div>
+          <pre id="digestBody" style="white-space:pre-wrap;font-size:0.85rem;margin:0;max-height:28rem;overflow:auto;color:var(--text)"></pre>
+          <p class="empty" id="digestEmpty" style="display:none">No trade alerts or executed trades yet today.</p>
+        </div>
+      </section>
+
       <section class="section grid-2" aria-label="Activity">
         <div class="panel">
           <h3>Recent tweets</h3>
+          <p class="hint" style="margin:0 0 0.5rem">Wrong labels train the parser only — they do not affect live orders.</p>
           <div class="table-toolbar" id="tweetRangeToolbar">
             <select id="tweetRange" aria-label="Tweet time range">
               <option value="1d">1 Day</option>
@@ -1013,6 +1025,42 @@
       return html;
     }
 
+    function convictionBadge(conviction) {
+      if (!conviction) return "";
+      return `<span class="badge ignore">${esc(conviction)}</span>`;
+    }
+
+    async function submitFeedback(tweetId, correctAction) {
+      const note = window.prompt("Optional note (training only; does not affect live orders):", "") || null;
+      const res = await fetch("/parser/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tweet_id: tweetId, correct_action: correctAction, note }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTweets();
+    }
+
+    async function undoFeedback(tweetId) {
+      await fetch(`/parser/feedback/${encodeURIComponent(tweetId)}`, { method: "DELETE" });
+      await loadTweets();
+    }
+
+    function renderDigest(digest) {
+      const body = document.getElementById("digestBody");
+      const empty = document.getElementById("digestEmpty");
+      const status = document.getElementById("digestStatus");
+      if (!digest) {
+        body.textContent = "";
+        empty.style.display = "block";
+        status.textContent = "—";
+        return;
+      }
+      empty.style.display = "none";
+      status.textContent = `${digest.status} · ${digest.current_period} · alerts ${digest.stats?.alert_count ?? digest.stats?.tweet_count ?? 0} · trades ${digest.stats?.trade_count ?? 0}`;
+      body.textContent = digest.summary_markdown || "";
+    }
+
     function renderWatchlist(entries = []) {
       const el = document.getElementById("watchlistChips");
       document.getElementById("watchlistCount").textContent = String(entries.length);
@@ -1171,6 +1219,7 @@
 
       renderTrades(data);
       renderWatchlist(data.watchlist || []);
+      renderDigest(data.daily_digest || null);
       allTickers = data.recognized_tickers || [];
       document.getElementById("tickerCount").textContent = String(allTickers.length);
       renderTickerChips(document.getElementById("tickerFilter").value);
@@ -1229,17 +1278,50 @@
       for (const t of tweets) {
         const li = document.createElement("li");
         const sig = signalBadge(t.signal_action, t.signal_ticker, t.signal_rejection_reason);
+        const conviction = convictionBadge(t.buy_conviction);
+        const traded = t.traded
+          ? `<span class="badge filled" title="${esc(t.trade_status || "")}">traded ${t.trade_amount_usd != null ? fmtUsd(t.trade_amount_usd) : ""}</span>`
+          : "";
         const link = t.url
           ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">Open on X</a>`
           : "";
+        let feedbackHtml = "";
+        if (t.feedback_correct_action) {
+          feedbackHtml = `<div class="meta"><span class="badge watch">Labeled: should be ${esc(t.feedback_correct_action)}</span>
+            <button type="button" class="feedback-undo" data-tweet-id="${esc(t.tweet_id)}">Undo</button></div>`;
+        } else {
+          feedbackHtml = `<div class="meta feedback-actions" data-tweet-id="${esc(t.tweet_id)}">
+            <button type="button" data-action="BUY">Wrong: BUY</button>
+            <button type="button" data-action="SELL">Wrong: SELL</button>
+            <button type="button" data-action="IGNORE">Wrong: IGNORE</button>
+          </div>`;
+        }
         li.innerHTML = `
-          <div class="meta">${sig}
+          <div class="meta">${sig}${conviction}${traded}
             <span class="time" title="${esc(tweetTimeTitle(t))}">${fmtRelative(t.posted_at)}</span>
             ${link}
           </div>
-          <div class="body">${esc(t.text)}</div>`;
+          <div class="body">${esc(t.text)}</div>
+          ${feedbackHtml}`;
         tweetFeed.appendChild(li);
       }
+      tweetFeed.querySelectorAll(".feedback-actions button").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const tweetId = btn.parentElement.dataset.tweetId;
+          try {
+            btn.disabled = true;
+            await submitFeedback(tweetId, btn.dataset.action);
+          } catch (err) {
+            alert(`Feedback failed: ${err.message}`);
+            btn.disabled = false;
+          }
+        });
+      });
+      tweetFeed.querySelectorAll(".feedback-undo").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          await undoFeedback(btn.dataset.tweetId);
+        });
+      });
     }
 
     function renderTrades(data) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta, timezone
+from enum import Enum
 from zoneinfo import ZoneInfo
 
 US_EASTERN = ZoneInfo("America/New_York")
@@ -9,6 +10,74 @@ MARKET_CLOSE = time(16, 0)
 # Extended window for balance chart / snapshots (earnings pre-market + after-hours).
 EXTENDED_CHART_OPEN = time(7, 0)
 EXTENDED_CHART_CLOSE = time(20, 0)
+HALFTIME = time(12, 0)
+FOURTH_QUARTER = time(15, 0)
+
+
+class DigestPeriod(str, Enum):
+    PREMARKET = "premarket"
+    MORNING = "morning"
+    HALFTIME = "halftime"
+    FOURTH_QUARTER = "fourth_quarter"
+    AFTER_HOURS = "after_hours"
+    COMPLETE = "complete"
+
+
+# Checkpoint events (not tweet buckets). market_close is a webhook/checkpoint only.
+DIGEST_CHECKPOINTS: tuple[tuple[time, str], ...] = (
+    (MARKET_OPEN, "premarket"),
+    (HALFTIME, "halftime"),
+    (FOURTH_QUARTER, "fourth_quarter"),
+    (MARKET_CLOSE, "market_close"),
+    (EXTENDED_CHART_CLOSE, "finalize"),
+)
+
+
+def digest_period_for(moment: datetime | None = None) -> DigestPeriod:
+    """Bucket for a tweet/trade timestamp (market_close is not a bucket)."""
+    if moment is None:
+        moment = datetime.now(US_EASTERN)
+    else:
+        moment = to_eastern(moment)
+
+    current = moment.time()
+    if current < MARKET_OPEN:
+        return DigestPeriod.PREMARKET
+    if current < HALFTIME:
+        return DigestPeriod.MORNING
+    if current < FOURTH_QUARTER:
+        return DigestPeriod.HALFTIME
+    if current < MARKET_CLOSE:
+        return DigestPeriod.FOURTH_QUARTER
+    return DigestPeriod.AFTER_HOURS
+
+
+def current_digest_period(moment: datetime | None = None) -> DigestPeriod:
+    """Latest period that has started for wall-clock ``moment`` (Mon–Fri)."""
+    if moment is None:
+        moment = datetime.now(US_EASTERN)
+    else:
+        moment = to_eastern(moment)
+    if moment.weekday() >= 5:
+        return DigestPeriod.COMPLETE
+    if moment.time() >= EXTENDED_CHART_CLOSE:
+        return DigestPeriod.COMPLETE
+    return digest_period_for(moment)
+
+
+def digest_date_et(moment: datetime | None = None) -> str:
+    if moment is None:
+        moment = datetime.now(US_EASTERN)
+    else:
+        moment = to_eastern(moment)
+    return moment.date().isoformat()
+
+
+def digests_day_bounds_utc(digest_date: str) -> tuple[datetime, datetime]:
+    day = datetime.fromisoformat(digest_date).date()
+    start = datetime.combine(day, EXTENDED_CHART_OPEN, tzinfo=US_EASTERN).astimezone(timezone.utc)
+    end = datetime.combine(day, EXTENDED_CHART_CLOSE, tzinfo=US_EASTERN).astimezone(timezone.utc)
+    return start, end
 
 
 def is_within_regular_market_hours(moment: datetime | None = None) -> bool:

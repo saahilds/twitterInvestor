@@ -9,22 +9,35 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config.account_managers import AccountManagerConfig, DEFAULT_MANAGER_ID, default_manager_id
 from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.execution.robinhood_session import RobinhoodSessionManager
-from app.models.db_models import ParsedSignal, RecognizedTicker, Trade, Tweet, WatchlistEntry
+from app.models.db_models import (
+    ParsedSignal,
+    ParserFeedback,
+    RecognizedTicker,
+    SignalAction,
+    Trade,
+    Tweet,
+    WatchlistEntry,
+    utc_now,
+)
+from app.parsing.buy_conviction import infer_buy_conviction
 from app.risk.market_hours import is_within_regular_market_hours
 from app.models.schemas import (
     BrokerHoldingsSnapshot,
     ChartPointRead,
+    DailyDigestRead,
     DashboardSnapshot,
     DashboardTweetRead,
     HealthResponse,
     ParsedSignalRead,
+    ParserFeedbackCreate,
+    ParserFeedbackRead,
     PortfolioChartResponse,
     PortfolioChartSummary,
     PortfolioPnlResponse,
@@ -36,6 +49,7 @@ from app.models.schemas import (
     WorkerControlResponse,
 )
 from app.services import portfolio_history
+from app.services.daily_digest import DailyDigestService
 from app.services.pnl_service import PnlService
 from app.services.tweet_query import (
     DEFAULT_TWEET_LIMIT,
@@ -60,10 +74,12 @@ def create_router(
     pnl_service: PnlService | None = None,
     brokers_by_manager: dict[str, object] | None = None,
     rh_session: RobinhoodSessionManager | None = None,
+    digest_service: DailyDigestService | None = None,
 ) -> APIRouter:
     router = APIRouter()
     brokers_by_manager = brokers_by_manager or {}
     manager_ids = [cfg.id for cfg in manager_configs]
+    digest_service = digest_service or DailyDigestService(session_factory)
 
     default_manager = default_manager_id(settings, manager_configs)
 
@@ -72,21 +88,48 @@ def create_router(
             return manager
         return default_manager
 
-    def _tweet_to_dashboard_read(tweet: Tweet) -> DashboardTweetRead:
+    def _tweet_to_dashboard_read(
+        tweet: Tweet,
+        feedback_map: dict[str, str] | None = None,
+    ) -> DashboardTweetRead:
         latest = None
         if tweet.parsed_signals:
             latest = max(tweet.parsed_signals, key=lambda signal: signal.created_at)
         payload = TweetRead.model_validate(tweet).model_dump()
+        traded = False
+        trade_status = None
+        trade_amount = None
+        buy_conviction = None
         if latest is not None:
+            trades = list(latest.trades) if latest.trades else []
+            if not trades:
+                trades = [t for s in tweet.parsed_signals for t in s.trades]
+            if trades:
+                trade = max(trades, key=lambda row: row.created_at)
+                traded = True
+                trade_status = trade.status
+                trade_amount = trade.amount_usd
+            if latest.action == SignalAction.BUY:
+                buy_conviction = infer_buy_conviction(latest.raw_text or tweet.text).value
             payload.update(
                 {
                     "signal_action": latest.action.value,
                     "signal_ticker": latest.ticker,
                     "signal_confidence": latest.confidence,
                     "signal_rejection_reason": latest.rejection_reason,
+                    "buy_conviction": buy_conviction,
+                    "traded": traded,
+                    "trade_status": trade_status,
+                    "trade_amount_usd": trade_amount,
                 }
             )
+        if feedback_map and tweet.tweet_id in feedback_map:
+            payload["feedback_correct_action"] = feedback_map[tweet.tweet_id]
         return DashboardTweetRead(**payload)
+
+    def _feedback_map(db: Session) -> dict[str, str]:
+        rows = db.execute(select(ParserFeedback).order_by(ParserFeedback.created_at.desc()).limit(500)).scalars().all()
+        return {row.tweet_id: row.correct_action.value for row in rows}
 
     def _session_snapshot():
         if rh_session is not None:
@@ -375,7 +418,8 @@ def create_router(
                 limit=limit,
                 signal_filter=normalize_signal_filter(signal_filter),
             )
-        return [_tweet_to_dashboard_read(row) for row in rows]
+            feedback = _feedback_map(db)
+        return [_tweet_to_dashboard_read(row, feedback) for row in rows]
 
     @router.get("/dashboard/data", response_model=DashboardSnapshot)
     async def dashboard_data(
@@ -431,6 +475,8 @@ def create_router(
             )
 
         session = _session_snapshot()
+        digest_row = digest_service.get()
+        daily_digest = DailyDigestRead(**digest_service.to_api_dict(digest_row)) if digest_row else None
         return DashboardSnapshot(
             health=HealthResponse(
                 worker_running=snapshot.running,
@@ -462,7 +508,89 @@ def create_router(
             worker_last_error=snapshot.last_error,
             active_manager=manager_id,
             managers=snapshot.managers,
+            daily_digest=daily_digest,
         )
+
+    @router.get("/parser/feedback", response_model=list[ParserFeedbackRead])
+    async def list_parser_feedback(limit: int = Query(default=50, ge=1, le=200)) -> list[ParserFeedbackRead]:
+        with session_factory() as db:
+            rows = db.execute(
+                select(ParserFeedback).order_by(ParserFeedback.created_at.desc()).limit(limit)
+            ).scalars().all()
+        return [ParserFeedbackRead.model_validate(row) for row in rows]
+
+    @router.post("/parser/feedback", response_model=ParserFeedbackRead)
+    async def create_parser_feedback(body: ParserFeedbackCreate) -> ParserFeedbackRead:
+        with session_factory() as db:
+            tweet = db.execute(
+                select(Tweet)
+                .options(selectinload(Tweet.parsed_signals))
+                .where(Tweet.tweet_id == body.tweet_id)
+            ).scalar_one_or_none()
+            if tweet is None:
+                raise HTTPException(status_code=404, detail="tweet_not_found")
+            latest = None
+            if tweet.parsed_signals:
+                latest = max(tweet.parsed_signals, key=lambda signal: signal.created_at)
+            existing = db.execute(
+                select(ParserFeedback).where(ParserFeedback.tweet_id == body.tweet_id)
+            ).scalar_one_or_none()
+            if existing is None:
+                existing = ParserFeedback(tweet_id=body.tweet_id, tweet_text=tweet.text)
+                db.add(existing)
+            existing.tweet_text = tweet.text
+            existing.parser_action = latest.action if latest else SignalAction.IGNORE
+            existing.parser_ticker = latest.ticker if latest else None
+            existing.correct_action = body.correct_action
+            existing.note = body.note
+            existing.exported_at = None
+            db.commit()
+            db.refresh(existing)
+            return ParserFeedbackRead.model_validate(existing)
+
+    @router.delete("/parser/feedback/{tweet_id}")
+    async def delete_parser_feedback(tweet_id: str) -> dict:
+        with session_factory() as db:
+            row = db.execute(
+                select(ParserFeedback).where(ParserFeedback.tweet_id == tweet_id)
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="feedback_not_found")
+            db.delete(row)
+            db.commit()
+        return {"ok": True, "tweet_id": tweet_id}
+
+    @router.get("/digest/latest", response_model=DailyDigestRead)
+    async def digest_latest() -> DailyDigestRead:
+        row = digest_service.get()
+        if row is None:
+            row = digest_service.rebuild()
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_unavailable")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.get("/digest", response_model=DailyDigestRead)
+    async def digest_by_date(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.get(date)
+        if row is None:
+            row = digest_service.rebuild(date)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_not_found")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.post("/digest/rebuild", response_model=DailyDigestRead)
+    async def digest_rebuild(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.rebuild(date, force=True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_rebuild_failed")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.post("/digest/finalize", response_model=DailyDigestRead)
+    async def digest_finalize(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.finalize(date)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_finalize_failed")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
 
     @router.get("/broker/holdings", response_model=BrokerHoldingsSnapshot)
     async def broker_holdings(manager: str | None = Query(default=None)) -> BrokerHoldingsSnapshot:
