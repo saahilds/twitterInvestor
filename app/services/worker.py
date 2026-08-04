@@ -8,6 +8,11 @@ from collections.abc import Callable
 from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
+from app.execution.robinhood_auth_age import (
+    compute_auth_age,
+    mark_auth_alert_sent,
+    should_alert_auth_status,
+)
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.service import TweetIngestionService
 from app.models.db_models import SignalAction
@@ -201,6 +206,8 @@ class BotOrchestrator:
     async def _run_maintenance(self, *, had_activity: bool) -> None:
         now_mono = time.monotonic()
 
+        await self._maybe_alert_robinhood_auth_age()
+
         if self.settings.snapshot_enabled:
             interval = max(60, self.settings.snapshot_interval_seconds)
             if now_mono - self._last_snapshot_at >= interval:
@@ -242,6 +249,41 @@ class BotOrchestrator:
                 )
 
         await self._maybe_digest_checkpoints()
+
+    async def _maybe_alert_robinhood_auth_age(self) -> None:
+        if self.settings.broker_backend != "robinhood":
+            return
+        if not self.alert_service:
+            return
+        try:
+            age = compute_auth_age(
+                max_age_days=self.settings.robinhood_pickle_max_age_days,
+                warn_days=self.settings.robinhood_pickle_warn_days,
+            )
+            if not should_alert_auth_status(age.status):
+                return
+            days = age.days_remaining
+            text = (
+                f"Robinhood auth {age.status}: "
+                f"{f'{days:.1f}d remaining' if days is not None else 'age unknown'}. "
+                "Use dashboard Refresh RH auth or scripts/rh_reauth.sh."
+            )
+            await self.alert_service.send(
+                "robinhood_auth_age",
+                {
+                    "status": age.status,
+                    "days_remaining": age.days_remaining,
+                    "age_days": age.age_days,
+                    "text": text,
+                },
+                key=f"robinhood_auth_age:{age.status}",
+            )
+            mark_auth_alert_sent(age.status)
+        except Exception as exc:
+            self.logger.warning(
+                "robinhood_auth_age_alert_failed",
+                extra={"event_type": "robinhood_auth", "error": str(exc)},
+            )
 
     async def _maybe_digest_checkpoints(self) -> None:
         if not self.settings.daily_digest_enabled:

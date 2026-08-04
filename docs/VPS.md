@@ -297,7 +297,11 @@ CRON_TZ=America/New_York
 
 0 7 * * 1-5 /opt/twitterInvestor/scripts/startup_backfill.sh >> /opt/twitterInvestor/data/logs/cron.log 2>&1
 0 20 * * 1-5 /opt/twitterInvestor/scripts/evening_pause.sh >> /opt/twitterInvestor/data/logs/cron.log 2>&1
+# Optional backup if you cannot use the dashboard button that week (have phone ready for push)
+0 18 * * 0 /opt/twitterInvestor/scripts/rh_reauth.sh >> /opt/twitterInvestor/data/logs/cron.log 2>&1
 ```
+
+Primary travel path: open the dashboard → **Refresh RH auth** → approve in the Robinhood app. The Sunday cron is only a backup when you have SSH but not the phone browser.
 
 Test manually:
 
@@ -306,6 +310,7 @@ cd /opt/twitterInvestor
 ./scripts/evening_pause.sh
 curl -s http://127.0.0.1:8000/health | grep worker_paused
 ./scripts/startup_backfill.sh   # runs backfill + resume (may take several minutes)
+# ./scripts/rh_reauth.sh        # phone must approve within ~3 minutes
 ```
 
 Optional — start container on reboot:
@@ -425,15 +430,26 @@ docker compose exec -T bot uv run python -m app.cli.rh_login --verify-all-accoun
 curl -s http://127.0.0.1:8000/health | python3 -m json.tool
 ```
 
-Look for `"robinhood_logged_in": true`.
+Look for `"robinhood_logged_in": true` and auth-age fields (`robinhood_auth_status`, `robinhood_auth_days_remaining`). Device approval usually lasts ~**7 days**; refresh by day **6** (dashboard chip / webhook warn at 1 day remaining).
 
 6. Confirm pickle persisted:
 
 ```bash
 ls -la /opt/twitterInvestor/data/rh-tokens/
+# expect robinhood.pickle and robinhood_auth_meta.json after a successful login
 docker compose restart bot
-curl -s http://127.0.0.1:8000/health | grep robinhood_logged_in
-# should still be true after restart
+curl -s http://127.0.0.1:8000/health | grep robinhood
+# should still be logged in after restart
+```
+
+**Travel reauth (preferred):** open the dashboard → **Refresh RH auth** → approve the Robinhood app push (waits up to `ROBINHOOD_REAUTH_TIMEOUT_SECONDS`, default 180s).
+
+**CLI / cron backup:**
+
+```bash
+./scripts/rh_reauth.sh
+# or
+docker compose exec -it bot uv run python -m app.cli.rh_login
 ```
 
 **If login fails with 429:** wait 15 minutes; don't retry repeatedly. Session manager backs off automatically.
@@ -486,7 +502,7 @@ curl -s http://127.0.0.1:8000/trades?limit=5 | python3 -m json.tool
 |------|---------|
 | View logs | `docker compose logs -f bot` |
 | Update code | `cd /opt/twitterInvestor && git pull && ./scripts/start_bot.sh` |
-| Re-auth RH | `docker compose exec -it bot uv run python -m app.cli.rh_login` |
+| Re-auth RH | Dashboard **Refresh RH auth** (approve on phone), or `./scripts/rh_reauth.sh`, or `docker compose exec -it bot uv run python -m app.cli.rh_login` |
 | Re-sync X profile | `rsync` from Mac (step 7) |
 | Reboot server | Hetzner console or `reboot` — systemd/cron bring bot back |
 
@@ -538,6 +554,7 @@ Repo files used on the VPS:
 | `scripts/stop_bot.sh` | `docker compose stop` |
 | `scripts/startup_backfill.sh` | 7 AM backfill + `POST /resume` |
 | `scripts/evening_pause.sh` | 8 PM `POST /pause` |
+| `scripts/rh_reauth.sh` | Force RH login; approve push on phone (dashboard button preferred) |
 | `deploy/caddy/Caddyfile` | HTTPS reverse proxy template |
 | `deploy/cron/twitter-bot.cron` | Cron examples (America/New_York) |
 | `deploy/systemd/twitter-bot.service` | Optional boot-time compose start |
@@ -886,8 +903,9 @@ git pull && ./scripts/start_bot.sh
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | No tweets ingested | Worker paused or X profile expired | `POST /resume`; re-rsync X profile |
-| RH 429 / login loop | Expired pickle + repeated logins | Wait for backoff; run `rh_login` once manually |
-| `robinhood_logged_in: false` | Push MFA needed | SSH in, `rh_login`, approve on phone |
+| RH 429 / login loop | Expired pickle + repeated logins | Wait for backoff; run dashboard Refresh RH auth / `rh_reauth.sh` once |
+| `robinhood_logged_in: false` | Push MFA needed | Dashboard **Refresh RH auth** (or SSH `rh_login`), approve on phone |
+| `robinhood_auth_status: warn/critical` | Pickle approaching ~7d device limit | Refresh before day 6; webhook alerts once per status |
 | Playwright OOM | RAM pressure | CX32 (8 GB) recommended; `shm_size: 1gb` in compose |
 | Dashboard public | Caddy not configured | Never expose `8000` publicly; use Caddy basic auth |
 | Data lost after deploy | Used `down -v` | Restore from backup; re-seed RH + X |

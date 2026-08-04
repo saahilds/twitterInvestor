@@ -223,7 +223,7 @@
       border: 1px solid var(--border);
       color: var(--text);
     }
-    #errorBanner, #workerBanner {
+    #errorBanner, #workerBanner, #reauthBanner {
       display: none;
       padding: 0.65rem 1rem;
       border-radius: 8px;
@@ -233,6 +233,9 @@
     }
     #errorBanner { background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: #fecaca; }
     #workerBanner { background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.35); color: #fde68a; }
+    #reauthBanner.info { background: rgba(96, 165, 250, 0.12); border: 1px solid rgba(96, 165, 250, 0.4); color: #bfdbfe; }
+    #reauthBanner.ok { background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.4); color: #a7f3d0; }
+    #reauthBanner.bad { background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: #fecaca; }
     .empty { color: var(--muted); font-style: italic; font-size: 0.8125rem; padding: 0.5rem 0; }
     .ticker-cell strong { font-weight: 650; letter-spacing: 0.02em; }
     details.tickers-panel summary {
@@ -473,12 +476,14 @@
         </label>
         <button type="button" id="pauseBtn">Pause</button>
         <button type="button" id="resumeBtn">Resume</button>
+        <button type="button" id="reauthBtn">Refresh RH auth</button>
         <button type="button" class="primary" id="refreshBtn">Refresh</button>
       </div>
     </header>
 
     <div id="errorBanner"></div>
     <div id="workerBanner"></div>
+    <div id="reauthBanner"></div>
 
     <main>
       <section class="section" aria-label="Robinhood account">
@@ -1205,6 +1210,34 @@
       addPill(h.live_trading_enabled ? "Live" : "Simulation", h.live_trading_enabled ? "ok" : "info");
       addPill(h.order_execution_mode.replace(/_/g, " "), "info");
       if (h.trading_window_enabled) addPill("Trading window on", "info");
+      if (h.robinhood_auth_status) {
+        const rem = h.robinhood_auth_days_remaining;
+        let authText = "RH auth";
+        let authCls = "info";
+        if (h.robinhood_auth_status === "ok" && rem != null) {
+          authText = `RH auth · ${Number(rem).toFixed(1)}d left`;
+          authCls = "ok";
+        } else if (h.robinhood_auth_status === "warn") {
+          authText = rem != null ? `RH auth · refresh soon (${Number(rem).toFixed(1)}d)` : "RH auth · refresh soon";
+          authCls = "warn";
+        } else if (h.robinhood_auth_status === "critical") {
+          authText = "RH auth · overdue";
+          authCls = "bad";
+        } else if (h.robinhood_auth_status === "missing") {
+          authText = "RH auth · missing";
+          authCls = "bad";
+        } else {
+          authText = "RH auth · unknown";
+          authCls = "warn";
+        }
+        const authPill = document.createElement("span");
+        authPill.className = `pill ${authCls}`;
+        authPill.textContent = authText;
+        if (h.robinhood_auth_refresh_due_at) {
+          authPill.title = `Refresh due ${fmtTime(h.robinhood_auth_refresh_due_at)}`;
+        }
+        pills.appendChild(authPill);
+      }
 
       const workerBanner = document.getElementById("workerBanner");
       if (data.worker_last_error) {
@@ -1362,6 +1395,64 @@
       }
     }
 
+    let reauthInFlight = false;
+    function setReauthBanner(text, cls) {
+      const el = document.getElementById("reauthBanner");
+      if (!text) {
+        el.style.display = "none";
+        el.textContent = "";
+        el.className = "";
+        return;
+      }
+      el.style.display = "block";
+      el.className = cls || "info";
+      el.textContent = text;
+    }
+
+    async function pollReauthStatus() {
+      const res = await fetch("/robinhood/reauth/status");
+      if (!res.ok) throw new Error(`reauth status ${res.status}`);
+      return res.json();
+    }
+
+    async function startRhReauth() {
+      if (reauthInFlight) return;
+      reauthInFlight = true;
+      const btn = document.getElementById("reauthBtn");
+      btn.disabled = true;
+      setReauthBanner("Approve on your Robinhood app now…", "info");
+      try {
+        const start = await fetch("/robinhood/reauth", { method: "POST" });
+        if (!start.ok) {
+          const detail = await start.text();
+          throw new Error(detail || `reauth ${start.status}`);
+        }
+        const deadline = Date.now() + 200000;
+        while (Date.now() < deadline) {
+          const job = await pollReauthStatus();
+          if (job.status === "awaiting_approval") {
+            setReauthBanner(job.message || "Approve on your Robinhood app now…", "info");
+          } else if (job.status === "succeeded") {
+            setReauthBanner(job.message || "Robinhood auth refreshed.", "ok");
+            await load();
+            return;
+          } else if (job.status === "failed") {
+            setReauthBanner(job.message || job.error || "Reauth failed", "bad");
+            return;
+          } else if (job.status === "idle") {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        setReauthBanner("Timed out waiting for approval. Try again.", "bad");
+      } catch (err) {
+        setReauthBanner(String(err.message || err), "bad");
+      } finally {
+        reauthInFlight = false;
+        btn.disabled = false;
+      }
+    }
+
     document.getElementById("tweetRange").addEventListener("change", (e) => {
       tweetRangePreset = e.target.value;
       saveTweetRangeState();
@@ -1430,6 +1521,7 @@
     });
     document.getElementById("pauseBtn").addEventListener("click", () => postControl("/pause"));
     document.getElementById("resumeBtn").addEventListener("click", () => postControl("/resume"));
+    document.getElementById("reauthBtn").addEventListener("click", () => startRhReauth());
     document.getElementById("tickerFilter").addEventListener("input", (e) => {
       renderTickerChips(e.target.value);
     });

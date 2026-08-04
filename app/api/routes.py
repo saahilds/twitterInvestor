@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.config.account_managers import AccountManagerConfig, DEFAULT_MANAGER_ID, default_manager_id
 from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
+from app.execution.robinhood_auth_age import compute_auth_age
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.execution.robinhood_session import RobinhoodSessionManager
 from app.models.db_models import (
@@ -38,6 +39,7 @@ from app.models.schemas import (
     ParsedSignalRead,
     ParserFeedbackCreate,
     ParserFeedbackRead,
+    RobinhoodReauthStatusResponse,
     PortfolioChartResponse,
     PortfolioChartSummary,
     PortfolioPnlResponse,
@@ -139,14 +141,34 @@ def create_router(
                 return broker.session_snapshot()
         return None
 
-    @router.get("/health", response_model=HealthResponse)
-    async def health(manager: str | None = Query(default=None)) -> HealthResponse:
-        snapshot = orchestrator.snapshot()
-        active_manager = _resolve_manager_id(manager)
+    def _auth_age_fields() -> dict:
+        if settings.broker_backend != "robinhood":
+            return {
+                "robinhood_auth_last_at": None,
+                "robinhood_auth_age_days": None,
+                "robinhood_auth_days_remaining": None,
+                "robinhood_auth_refresh_due_at": None,
+                "robinhood_auth_status": None,
+                "robinhood_reauth_status": None,
+            }
+        age = compute_auth_age(
+            max_age_days=settings.robinhood_pickle_max_age_days,
+            warn_days=settings.robinhood_pickle_warn_days,
+        )
+        reauth_status = None
+        if rh_session is not None:
+            reauth_status = rh_session.reauth_snapshot().status
+        return {
+            "robinhood_auth_last_at": age.last_authenticated_at,
+            "robinhood_auth_age_days": age.age_days,
+            "robinhood_auth_days_remaining": age.days_remaining,
+            "robinhood_auth_refresh_due_at": age.refresh_due_at,
+            "robinhood_auth_status": age.status,
+            "robinhood_reauth_status": reauth_status,
+        }
+
+    def _health_response(*, active_manager: str, snapshot) -> HealthResponse:
         session = _session_snapshot()
-        rh_logged_in = session.logged_in if session is not None else None
-        rh_error = session.last_error if session is not None else None
-        rh_retry = session.retry_in_seconds if session is not None and session.last_error else None
         return HealthResponse(
             worker_running=snapshot.running,
             worker_paused=snapshot.paused,
@@ -159,11 +181,52 @@ def create_router(
             poll_interval_seconds=settings.poll_interval_seconds,
             dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
             default_buy_allocation_pct=settings.default_buy_allocation_pct,
-            robinhood_logged_in=rh_logged_in,
-            robinhood_auth_error=rh_error,
-            robinhood_auth_retry_in_seconds=rh_retry,
+            robinhood_logged_in=session.logged_in if session is not None else None,
+            robinhood_auth_error=session.last_error if session is not None else None,
+            robinhood_auth_retry_in_seconds=(
+                session.retry_in_seconds if session is not None and session.last_error else None
+            ),
             managers=snapshot.managers,
             active_manager=active_manager,
+            **_auth_age_fields(),
+        )
+
+    @router.get("/health", response_model=HealthResponse)
+    async def health(manager: str | None = Query(default=None)) -> HealthResponse:
+        snapshot = orchestrator.snapshot()
+        active_manager = _resolve_manager_id(manager)
+        return _health_response(active_manager=active_manager, snapshot=snapshot)
+
+    @router.post("/robinhood/reauth", response_model=RobinhoodReauthStatusResponse)
+    async def start_robinhood_reauth() -> RobinhoodReauthStatusResponse:
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        if not settings.robinhood_username or not settings.robinhood_password:
+            raise HTTPException(status_code=400, detail="missing_robinhood_credentials")
+        job = await asyncio.to_thread(rh_session.start_reauth)
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
+        )
+
+    @router.get("/robinhood/reauth/status", response_model=RobinhoodReauthStatusResponse)
+    async def robinhood_reauth_status() -> RobinhoodReauthStatusResponse:
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        job = rh_session.reauth_snapshot()
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
         )
 
     @router.get("/tweets", response_model=list[TweetRead])
@@ -474,30 +537,10 @@ def create_router(
                 error="positions_refresh_skipped",
             )
 
-        session = _session_snapshot()
         digest_row = digest_service.get()
         daily_digest = DailyDigestRead(**digest_service.to_api_dict(digest_row)) if digest_row else None
         return DashboardSnapshot(
-            health=HealthResponse(
-                worker_running=snapshot.running,
-                worker_paused=snapshot.paused,
-                simulation_mode=settings.simulation_mode,
-                live_trading_enabled=settings.live_trading_enabled,
-                order_execution_mode=settings.order_execution_mode,
-                trading_window_enabled=settings.trading_window_enabled,
-                within_market_hours=is_within_regular_market_hours(),
-                target_account=settings.target_account,
-                poll_interval_seconds=settings.poll_interval_seconds,
-                dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
-                default_buy_allocation_pct=settings.default_buy_allocation_pct,
-                robinhood_logged_in=session.logged_in if session is not None else None,
-                robinhood_auth_error=session.last_error if session is not None else None,
-                robinhood_auth_retry_in_seconds=(
-                    session.retry_in_seconds if session is not None and session.last_error else None
-                ),
-                managers=snapshot.managers,
-                active_manager=manager_id,
-            ),
+            health=_health_response(active_manager=manager_id, snapshot=snapshot),
             pnl=pnl,
             broker_holdings=broker_holdings,
             recent_tweets=[],

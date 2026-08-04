@@ -236,7 +236,16 @@ VPS (Docker):
 
 - **JSON snapshot:** `GET /dashboard/data`, `GET /portfolio/pnl`
 
-The dashboard shows bot status, Robinhood holdings, P&amp;L by ticker, today's digest, recent tweets/trades (with Wrong-label buttons), and pause/resume controls.
+The dashboard shows bot status, Robinhood holdings, P&amp;L by ticker, today's digest, recent tweets/trades (with Wrong-label buttons), pause/resume, and a **Refresh RH auth** button (approve the push in the Robinhood app).
+
+Robinhood device approval typically lasts ~7 days. The dashboard **RH auth** chip tracks age (default max **6 days**, warn at **1 day** remaining). While traveling, tap **Refresh RH auth**, then approve in the Robinhood mobile app.
+
+```bash
+# Optional CLI / cron backup (same flow as the dashboard button)
+./scripts/rh_reauth.sh
+```
+
+Env knobs: `ROBINHOOD_PICKLE_MAX_AGE_DAYS=6`, `ROBINHOOD_PICKLE_WARN_DAYS=1`, `ROBINHOOD_REAUTH_TIMEOUT_SECONDS=180`.
 
 ### Account balance (Robinhood)
 
@@ -327,6 +336,8 @@ curl "http://127.0.0.1:8000/signals?limit=50"
 ## API Endpoints
 
 - `GET /health`
+- `POST /robinhood/reauth` — start force login; approve push in Robinhood app
+- `GET /robinhood/reauth/status` — `idle` | `awaiting_approval` | `succeeded` | `failed`
 - `GET /tweets?limit=50`
 - `GET /signals?limit=50`
 - `GET /portfolio/pnl` — realized + unrealized P&L by ticker (live Robinhood quotes, ~60s cache)

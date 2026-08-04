@@ -129,8 +129,22 @@ class HealthResponse(BaseModel):
     robinhood_logged_in: bool | None = None
     robinhood_auth_error: str | None = None
     robinhood_auth_retry_in_seconds: int | None = None
+    robinhood_auth_last_at: datetime | None = None
+    robinhood_auth_age_days: float | None = None
+    robinhood_auth_days_remaining: float | None = None
+    robinhood_auth_refresh_due_at: datetime | None = None
+    robinhood_auth_status: str | None = None
+    robinhood_reauth_status: str | None = None
     managers: list[ManagerStateSnapshot] = Field(default_factory=list)
     active_manager: str | None = None
+
+
+class RobinhoodReauthStatusResponse(BaseModel):
+    status: str
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error: str | None = None
+    message: str | None = None
 
 
 class DashboardTweetRead(TweetRead):
