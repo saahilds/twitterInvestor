@@ -31,9 +31,7 @@ def _parse_date(value: str | None) -> datetime | None:
 
 def _build_risk_config(settings) -> RiskConfig:
     return RiskConfig(
-        seed_tickers=set(settings.allowed_tickers),
         default_buy_allocation_pct=settings.default_buy_allocation_pct,
-        max_buy_allocation_pct=settings.max_buy_allocation_pct,
         standard_buy_allocation_pct_max=settings.standard_buy_allocation_pct_max,
         reload_buy_allocation_pct_max=settings.reload_buy_allocation_pct_max,
         thesis_buy_allocation_pct_min=settings.thesis_buy_allocation_pct_min,
@@ -42,8 +40,7 @@ def _build_risk_config(settings) -> RiskConfig:
         min_trade_notional_usd=settings.min_trade_notional_usd,
         cash_buffer_pct=settings.cash_buffer_pct,
         max_sell_notional_pct=settings.max_sell_notional_pct,
-        simulation_portfolio_usd=settings.simulation_portfolio_usd,
-        new_ticker_size_multiplier=settings.new_ticker_size_multiplier,
+        ck_portfolio_usd=settings.resolved_ck_portfolio_usd,
         cooldown_seconds=settings.cooldown_seconds,
         duplicate_window_seconds=settings.duplicate_window_seconds,
         trading_window_enabled=settings.trading_window_enabled,
@@ -51,7 +48,6 @@ def _build_risk_config(settings) -> RiskConfig:
         max_trades_per_ticker_per_day=settings.max_trades_per_ticker_per_day,
         daily_limit_counts_simulation=settings.daily_limit_counts_simulation,
         live_trading_enabled=False,
-        min_buy_confidence_unlisted=settings.min_buy_confidence_unlisted,
         min_sell_notional_usd=settings.min_sell_notional_usd,
         watchlist_stale_days=settings.watchlist_stale_days,
         watchlist_max_conviction_score=settings.watchlist_max_conviction_score,

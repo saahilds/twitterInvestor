@@ -71,6 +71,7 @@ class ParsedSignal(Base):
     suggested_trade_usd: Mapped[float] = mapped_column(Float, default=0.0)
     rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     watch_conviction: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_portfolio_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 

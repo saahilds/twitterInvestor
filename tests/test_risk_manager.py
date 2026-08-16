@@ -26,7 +26,7 @@ PORTFOLIO = 10_000.0
 
 
 def test_risk_reload_buy_scales_with_confidence(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers={"AAPL"}))
+    manager = RiskManager(make_risk_config())
     signal = TradeSignal(
         source_tweet_id="t-1",
         ticker="TSLA",
@@ -51,7 +51,7 @@ def test_risk_reload_buy_scales_with_confidence(db_session) -> None:
 
 
 def test_risk_thesis_buy_uses_tweet_allocation_pct(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers={"AAPL"}))
+    manager = RiskManager(make_risk_config())
     signal = TradeSignal(
         source_tweet_id="t-adea",
         ticker="ADEA",
@@ -76,7 +76,7 @@ def test_risk_thesis_buy_uses_tweet_allocation_pct(db_session) -> None:
 
 
 def test_risk_thesis_buy_scales_with_confidence_without_tweet_pct(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers={"AAPL"}))
+    manager = RiskManager(make_risk_config())
     signal = TradeSignal(
         source_tweet_id="t-thesis",
         ticker="ADEA",
@@ -98,8 +98,8 @@ def test_risk_thesis_buy_scales_with_confidence_without_tweet_pct(db_session) ->
     assert 470.0 <= result.normalized_trade_usd <= 490.0
 
 
-def test_risk_thesis_buy_capped_by_cash(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers=set(), cash_buffer_pct=0.5))
+def test_explicit_buy_allocation_uses_all_available_cash(db_session) -> None:
+    manager = RiskManager(make_risk_config(cash_buffer_pct=0.5))
     signal = TradeSignal(
         source_tweet_id="t-cap",
         ticker="AAOI",
@@ -118,11 +118,12 @@ def test_risk_thesis_buy_capped_by_cash(db_session) -> None:
     )
 
     assert result.allowed
-    assert result.normalized_trade_usd == 250.0
+    # Explicit 7% target ($700) bypasses weighting/buffer but never exceeds cash owned.
+    assert result.normalized_trade_usd == 300.0
 
 
 def test_risk_reload_capped_by_low_cash(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers=set()))
+    manager = RiskManager(make_risk_config())
     signal = TradeSignal(
         source_tweet_id="t-reload-cap",
         ticker="NVDA",
@@ -143,7 +144,7 @@ def test_risk_reload_capped_by_low_cash(db_session) -> None:
 
 
 def test_risk_blocks_live_buy_when_cash_unknown(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers={"NVDA"}, live_trading_enabled=True))
+    manager = RiskManager(make_risk_config(live_trading_enabled=True))
     signal = TradeSignal(
         source_tweet_id="t-no-cash",
         ticker="NVDA",
@@ -157,32 +158,8 @@ def test_risk_blocks_live_buy_when_cash_unknown(db_session) -> None:
     assert result.reason == "insufficient_cash_data"
 
 
-def test_risk_blocks_unlisted_buy_when_confidence_below_floor(db_session) -> None:
-    manager = RiskManager(
-        make_risk_config(seed_tickers={"AAPL"}, min_buy_confidence_unlisted=0.5)
-    )
-    signal = TradeSignal(
-        source_tweet_id="t-weak",
-        ticker="ADEA",
-        action=SignalAction.BUY,
-        confidence=0.2,
-        raw_text="maybe watching $ADEA",
-    )
-
-    result = manager.evaluate(
-        signal,
-        db_session,
-        manager_id="individual",
-        cash_available_usd=500.0,
-        portfolio_value_usd=PORTFOLIO,
-    )
-
-    assert not result.allowed
-    assert result.reason == "unlisted_buy_low_confidence"
-
-
 def test_risk_enforces_cooldown(db_session) -> None:
-    manager = RiskManager(make_risk_config(seed_tickers={"NVDA"}))
+    manager = RiskManager(make_risk_config())
     db_session.add(
         Trade(
             parsed_signal_id=1,

@@ -44,10 +44,9 @@ def resolve_buy_allocation_pct(
     reload_buy_allocation_pct_max: float,
     thesis_buy_allocation_pct_min: float,
     thesis_buy_allocation_pct_max: float,
-    max_buy_allocation_pct: float,
 ) -> float:
     if signal.portfolio_allocation_pct is not None:
-        return min(signal.portfolio_allocation_pct, max_buy_allocation_pct)
+        return max(0.0, signal.portfolio_allocation_pct)
 
     pct_min, pct_max = conviction_allocation_bounds(
         conviction,

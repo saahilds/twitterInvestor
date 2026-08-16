@@ -54,7 +54,7 @@ async def test_resolve_live_sell_order_uses_current_holdings() -> None:
     sizing = await manager._resolve_live_sell_order("ASTS", 1.0)
 
     assert sizing is not None
-    assert sizing.quantity == 7.96
+    assert sizing.quantity == 8.0
     broker.get_holding.assert_called_once_with("ASTS")
 
 

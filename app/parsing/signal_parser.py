@@ -8,7 +8,11 @@ from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.buy_intent import is_affirmative_buy_intent
 from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
-from app.parsing.sell_fraction import infer_sell_fraction
+from app.parsing.sell_fraction import (
+    has_explicit_sell_sizing,
+    infer_sell_fraction,
+    infer_target_portfolio_pct,
+)
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_segments import SignalSegment, segment_trade_units
 from app.parsing.watch_conviction import WatchConviction, infer_watch_conviction
@@ -108,10 +112,17 @@ class RuleBasedSignalParser:
         confidence = min(0.99, 0.50 + (score * 0.08))
 
         sell_fraction = None
+        target_portfolio_pct = None
+        sell_sizing_explicit = False
         buy_conviction = None
         portfolio_allocation_pct = None
         if action == SignalAction.SELL:
-            sell_fraction = infer_sell_fraction(local, default_fraction=self.default_sell_fraction)
+            target_portfolio_pct = infer_target_portfolio_pct(local)
+            sell_sizing_explicit = has_explicit_sell_sizing(local)
+            if target_portfolio_pct is None:
+                sell_fraction = infer_sell_fraction(local, default_fraction=self.default_sell_fraction)
+            else:
+                sell_fraction = None
         elif action == SignalAction.BUY:
             buy_conviction = infer_buy_conviction(local)
             portfolio_allocation_pct = infer_portfolio_allocation_pct(local)
@@ -126,6 +137,8 @@ class RuleBasedSignalParser:
             raw_text=local,
             suggested_trade_usd=0.0,
             sell_fraction=sell_fraction,
+            target_portfolio_pct=target_portfolio_pct,
+            sell_sizing_explicit=sell_sizing_explicit,
             buy_conviction=buy_conviction,
             portfolio_allocation_pct=portfolio_allocation_pct,
         )

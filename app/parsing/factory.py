@@ -21,7 +21,8 @@ class SignalParser(Protocol):
 
 
 def build_signal_parser(settings: Settings) -> RuleBasedSignalParser | HybridSignalParser:
-    known = settings.allowed_tickers
+    # Parser hints only: cashtags always parse, and no ticker is blocked from trading.
+    known = settings.known_tickers
     sell_fraction_default = settings.default_sell_fraction
     if settings.signal_parser_backend == "keywords":
         return RuleBasedSignalParser(

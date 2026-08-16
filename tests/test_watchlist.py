@@ -60,7 +60,7 @@ from app.testing.risk_config import make_risk_config
 def test_risk_buy_boosted_by_watchlist(db_session) -> None:
     registry = WatchlistRegistry(max_conviction_score=5.0, stale_days=30)
     registry.upsert("NVDA", db_session, manager_id="individual", watch_conviction=WatchConviction.HEAVY)
-    manager = RiskManager(make_risk_config(seed_tickers={"NVDA"}), watchlist=registry)
+    manager = RiskManager(make_risk_config(), watchlist=registry)
     from app.models.schemas import TradeSignal
     from app.parsing.buy_conviction import BuyConviction
 
@@ -85,3 +85,31 @@ def test_risk_buy_boosted_by_watchlist(db_session) -> None:
     base = portfolio * base_pct / 100.0
     boost = watch_size_multiplier(WatchConviction.HEAVY, 2.0)
     assert result.normalized_trade_usd == round(base * boost, 2)
+
+
+def test_explicit_buy_allocation_ignores_watchlist_weight(db_session) -> None:
+    registry = WatchlistRegistry(max_conviction_score=5.0, stale_days=30)
+    registry.upsert("NVDA", db_session, manager_id="individual", watch_conviction=WatchConviction.HEAVY)
+    manager = RiskManager(make_risk_config(), watchlist=registry)
+    from app.models.schemas import TradeSignal
+    from app.parsing.buy_conviction import BuyConviction
+
+    signal = TradeSignal(
+        source_tweet_id="t-explicit-watch",
+        ticker="NVDA",
+        action=SignalAction.BUY,
+        confidence=0.9,
+        raw_text="adding a 4% position in $NVDA",
+        buy_conviction=BuyConviction.THESIS,
+        portfolio_allocation_pct=4.0,
+    )
+    result = manager.evaluate(
+        signal,
+        db_session,
+        manager_id="individual",
+        cash_available_usd=10_000.0,
+        portfolio_value_usd=10_000.0,
+    )
+
+    assert result.allowed
+    assert result.normalized_trade_usd == 400.0

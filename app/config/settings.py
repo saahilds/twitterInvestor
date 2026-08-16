@@ -37,23 +37,29 @@ class Settings(BaseSettings):
     backfill_max_scrolls: int = 150
     backfill_scroll_pause_ms: int = 1500
 
-    allowed_tickers: Annotated[list[str], NoDecode] = Field(
+    # Parser-only hints for bare ticker mentions; never used as a trading allowlist.
+    known_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "AAPL",
-            "MSFT",
-            "NVDA",
-            "TSLA",
-            "META",
-            "AMZN",
-            "GOOGL",
-            "AMD",
-            "QQQ",
-            "SPY",
+            "ASTS",
+            "EOS.AX",
+            "NBIS",
+            "DRAM",
+            "VIVO",
+            "PENG",
+            "DGXX",
+            "DYOR",
+            "NFA",
+            "AMBA",
+            "VPG",
+            "ADTN",
+            "HLIT",
+            "AAOI",
+            "ADEA",
         ]
     )
-    # Portfolio-relative sizing (% of account equity). Tweet allocation % overrides defaults.
+
+    # Portfolio-relative sizing (% of CK sleeve). Explicit tweet allocations override defaults.
     default_buy_allocation_pct: float = 1.0
-    max_buy_allocation_pct: float = 10.0
     standard_buy_allocation_pct_max: float = 2.0
     reload_buy_allocation_pct_max: float = 5.0
     thesis_buy_allocation_pct_min: float = 3.0
@@ -62,17 +68,16 @@ class Settings(BaseSettings):
     min_trade_notional_usd: float = 1.0
     cash_buffer_pct: float = 2.0
     max_sell_notional_pct: float = 25.0
-    simulation_portfolio_usd: float = 10_000.0
-    new_ticker_size_multiplier: float = 10.0
+    # CKCapital sleeve notional used for % buy/sell sizing (not full RH equity).
+    ck_portfolio_usd: float | None = None
+    # Deprecated: used only when CK_PORTFOLIO_USD is unset.
+    simulation_portfolio_usd: float | None = None
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
     signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
     signal_ml_min_confidence: float = 0.35
     signal_ml_min_margin: float = 0.06
-    # 0 = disabled. When > 0, BUY for tickers outside ALLOWED_TICKERS / recognized_tickers
-    # requires parser confidence at least this high (keyword + hybrid signals set confidence).
-    min_buy_confidence_unlisted: float = 0.0
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
     watchlist_stale_days: int = 30
@@ -132,14 +137,14 @@ class Settings(BaseSettings):
     daily_digest_webhook_on_checkpoints: bool = False
     daily_digest_rebuild_interval_seconds: int = 300
 
-    @field_validator("allowed_tickers", mode="before")
+    @field_validator("known_tickers", mode="before")
     @classmethod
-    def parse_allowed_tickers(cls, value: object) -> list[str]:
+    def parse_known_tickers(cls, value: object) -> list[str]:
         if isinstance(value, str):
             return [ticker.strip().upper() for ticker in value.split(",") if ticker.strip()]
         if isinstance(value, list):
-            return [str(ticker).upper() for ticker in value]
-        raise ValueError("ALLOWED_TICKERS must be a comma-separated string or list")
+            return [str(ticker).strip().upper() for ticker in value if str(ticker).strip()]
+        raise ValueError("KNOWN_TICKERS must be a comma-separated string or list")
 
     @field_validator("playwright_cdp_url", mode="before")
     @classmethod
@@ -177,17 +182,19 @@ class Settings(BaseSettings):
             return 3600
         return value
 
-    @field_validator("max_buy_allocation_pct")
-    @classmethod
-    def validate_max_buy_allocation(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("MAX_BUY_ALLOCATION_PCT must be > 0")
-        return value
-
     @property
     def live_trading_enabled(self) -> bool:
         """Live trading is only enabled with explicit flag and simulation off."""
         return self.enable_live_trading and not self.simulation_mode
+
+    @property
+    def resolved_ck_portfolio_usd(self) -> float:
+        """CK sleeve % base; falls back to legacy SIMULATION_PORTFOLIO_USD if needed."""
+        if self.ck_portfolio_usd and self.ck_portfolio_usd > 0:
+            return float(self.ck_portfolio_usd)
+        if self.simulation_portfolio_usd is not None and self.simulation_portfolio_usd > 0:
+            return float(self.simulation_portfolio_usd)
+        return 10_000.0
 
 
 @lru_cache(maxsize=1)

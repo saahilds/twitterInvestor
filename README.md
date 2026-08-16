@@ -355,8 +355,9 @@ curl "http://127.0.0.1:8000/signals?limit=50"
 - Live trading requires both:
   - `ENABLE_LIVE_TRADING=true`
   - `SIMULATION_MODE=false`
-- Buy sizing is **portfolio-relative** (% of account equity from Robinhood, or `SIMULATION_PORTFOLIO_USD` in simulation). Tweet allocation % overrides when present; otherwise conviction tiers (`DEFAULT_BUY_ALLOCATION_PCT` → `RELOAD_*` → `THESIS_*`) scale with confidence, capped by `MAX_BUY_ALLOCATION_PCT` and available **cash** (never buying power / margin). Partial sells cap at `MAX_SELL_NOTIONAL_PCT` of portfolio.
-- `ALLOWED_TICKERS` seeds the DB at startup; **BUY** signals for other US tickers still execute (new-ticker sizing applies). **SELL** requires an open Robinhood position (not the allowlist).
+- Buy sizing is **portfolio-relative** (% of `CK_PORTFOLIO_USD`, the CKCapital sleeve — not full Robinhood equity). Explicit tweet allocations are authoritative and capped only by available cash; otherwise conviction/watchlist weighting applies. Explicit sell fractions and “trimmed down to X%” targets are authoritative and capped only by shares owned; fallback sells cap at `MAX_SELL_NOTIONAL_PCT` of the CK sleeve.
+- Any US ticker in a parsed **BUY**/**SELL** signal can trade (no allowlist). **SELL** still requires an open Robinhood position.
+- `KNOWN_TICKERS` is an optional parser-only hint for bare symbols without `$`; it never gates trading.
 
 ### Live trading test checklist (market hours)
 
@@ -368,11 +369,10 @@ curl "http://127.0.0.1:8000/signals?limit=50"
    BROKER_BACKEND=robinhood
    ORDER_EXECUTION_MODE=limit_at_ask
    DEFAULT_BUY_ALLOCATION_PCT=1.0
-   MAX_BUY_ALLOCATION_PCT=10.0
    RELOAD_BUY_ALLOCATION_PCT_MAX=5.0
    THESIS_BUY_ALLOCATION_PCT_MIN=3.0
    THESIS_BUY_ALLOCATION_PCT_MAX=7.0
-   SIMULATION_PORTFOLIO_USD=10000.0
+   CK_PORTFOLIO_USD=10000.0
    TRADING_WINDOW_ENABLED=true
    US_SYMBOLS_ONLY=true
    ROBINHOOD_USERNAME=...
@@ -455,7 +455,7 @@ Railway environment variables to configure:
 - `SIMULATION_MODE` (keep `true` until confident)
 - `ENABLE_LIVE_TRADING`
 - `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD` (only for live)
-- Risk settings (`DEFAULT_BUY_ALLOCATION_PCT`, `MAX_BUY_ALLOCATION_PCT`, `COOLDOWN_SECONDS`, etc.)
+- Risk settings (`DEFAULT_BUY_ALLOCATION_PCT`, `COOLDOWN_SECONDS`, etc.)
 
 Deploy steps:
 

@@ -41,7 +41,7 @@ def test_replay_compare_stored_detects_drift(session_factory, db_session) -> Non
     service = SignalReplayService(
         session_factory=session_factory,
         parser=parser,
-        risk_manager=RiskManager(make_risk_config(seed_tickers={"NVDA"})),
+        risk_manager=RiskManager(make_risk_config()),
         manager_id="individual",
     )
     rows = service.replay(compare_stored=True, include_risk=True, assume_cash=5_000)

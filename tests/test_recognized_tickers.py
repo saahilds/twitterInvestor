@@ -10,7 +10,7 @@ PORTFOLIO = 10_000.0
 
 def test_thesis_new_ticker_buy_sized_by_conviction(db_session) -> None:
     registry = RecognizedTickerRegistry()
-    manager = RiskManager(make_risk_config(seed_tickers=set()), registry=registry)
+    manager = RiskManager(make_risk_config(), registry=registry)
     signal = TradeSignal(
         source_tweet_id="t-new",
         ticker="AAOI",
@@ -35,7 +35,7 @@ def test_thesis_new_ticker_buy_sized_by_conviction(db_session) -> None:
 
 def test_thesis_buy_capped_by_cash(db_session) -> None:
     registry = RecognizedTickerRegistry()
-    manager = RiskManager(make_risk_config(seed_tickers=set()), registry=registry)
+    manager = RiskManager(make_risk_config(), registry=registry)
     signal = TradeSignal(
         source_tweet_id="t-cap",
         ticker="AAOI",
@@ -60,7 +60,7 @@ def test_thesis_buy_capped_by_cash(db_session) -> None:
 def test_recognized_ticker_reload_uses_default_allocation(db_session) -> None:
     registry = RecognizedTickerRegistry()
     registry.register("AAOI", db_session, manager_id="individual", source_tweet_id="seed")
-    manager = RiskManager(make_risk_config(seed_tickers=set()), registry=registry)
+    manager = RiskManager(make_risk_config(), registry=registry)
     signal = TradeSignal(
         source_tweet_id="t-known",
         ticker="AAOI",

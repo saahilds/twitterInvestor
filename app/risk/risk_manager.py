@@ -18,16 +18,14 @@ from app.risk.portfolio_sizing import (
     resolve_min_trade_notional_usd,
     resolve_portfolio_value,
 )
-from app.risk.sell_sizing import resolve_sell_order
+from app.risk.sell_sizing import holding_market_value_usd, resolve_sell_order, sell_fraction_to_target_weight
 from app.services.recognized_tickers import RecognizedTickerRegistry
 from app.services.watchlist import WatchlistRegistry
 
 
 @dataclass(slots=True)
 class RiskConfig:
-    seed_tickers: set[str]
     default_buy_allocation_pct: float
-    max_buy_allocation_pct: float
     standard_buy_allocation_pct_max: float
     reload_buy_allocation_pct_max: float
     thesis_buy_allocation_pct_min: float
@@ -36,8 +34,7 @@ class RiskConfig:
     min_trade_notional_usd: float
     cash_buffer_pct: float
     max_sell_notional_pct: float
-    simulation_portfolio_usd: float
-    new_ticker_size_multiplier: float
+    ck_portfolio_usd: float
     cooldown_seconds: int
     duplicate_window_seconds: int
     trading_window_enabled: bool = True
@@ -45,7 +42,6 @@ class RiskConfig:
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False
     live_trading_enabled: bool = False
-    min_buy_confidence_unlisted: float = 0.0
     min_sell_notional_usd: float = 1.0
     watchlist_stale_days: int = 30
     watchlist_max_conviction_score: float = 5.0
@@ -88,16 +84,8 @@ class RiskManager:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
 
         ticker = signal.ticker.upper()
-        recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(
-            ticker, db, manager_id=manager_id
-        )
-
-        if (
-            signal.action == SignalAction.BUY
-            and not recognized
-            and signal.confidence < self.config.min_buy_confidence_unlisted
-        ):
-            return RiskCheckResult(allowed=False, reason="unlisted_buy_low_confidence")
+        # Previously traded tickers (for sizing metadata / bare-ticker parse hints).
+        recognized = self.registry.is_recognized(ticker, db, manager_id=manager_id)
 
         if self.config.us_symbols_only and not _is_us_symbol(ticker):
             return RiskCheckResult(allowed=False, reason=f"non_us_symbol:{ticker}")
@@ -107,7 +95,7 @@ class RiskManager:
 
         portfolio = resolve_portfolio_value(
             portfolio_value_usd=portfolio_value_usd,
-            simulation_portfolio_usd=self.config.simulation_portfolio_usd,
+            simulation_portfolio_usd=self.config.ck_portfolio_usd,
         )
         min_notional = resolve_min_trade_notional_usd(
             portfolio,
@@ -121,17 +109,41 @@ class RiskManager:
         if signal.action == SignalAction.SELL:
             if holding is None or holding.quantity <= 0:
                 return RiskCheckResult(allowed=False, reason=f"not_in_portfolio:{ticker}")
-            sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
-            sell_fraction = min(
-                1.0,
-                self._watchlist_multiplier(ticker, db, manager_id=manager_id) * sell_fraction,
+            market_value = holding_market_value_usd(holding)
+            if market_value is None or market_value <= 0:
+                return RiskCheckResult(allowed=False, reason="invalid_sell_size")
+            explicit_sell_sizing = (
+                signal.target_portfolio_pct is not None or signal.sell_sizing_explicit
             )
+            if signal.target_portfolio_pct is not None:
+                computed = sell_fraction_to_target_weight(
+                    holding_market_value=market_value,
+                    portfolio_value_usd=portfolio,
+                    target_portfolio_pct=signal.target_portfolio_pct,
+                )
+                if computed is None:
+                    return RiskCheckResult(
+                        allowed=False,
+                        reason=f"already_at_or_below_target:{ticker}",
+                    )
+                sell_fraction = computed
+            else:
+                sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
+            if not explicit_sell_sizing:
+                sell_fraction = min(
+                    1.0,
+                    self._watchlist_multiplier(ticker, db, manager_id=manager_id) * sell_fraction,
+                )
             if sell_fraction <= 0:
                 return RiskCheckResult(allowed=False, reason="sell_fraction_zero")
-            max_sell_notional = max(
-                self.config.min_sell_notional_usd,
-                resolve_max_sell_notional_usd(portfolio, self.config.max_sell_notional_pct),
-            )
+            if explicit_sell_sizing:
+                # Exact tweet sizing is authoritative, bounded only by shares owned.
+                max_sell_notional = market_value
+            else:
+                max_sell_notional = max(
+                    self.config.min_sell_notional_usd,
+                    resolve_max_sell_notional_usd(portfolio, self.config.max_sell_notional_pct),
+                )
             sell_order = resolve_sell_order(
                 holding,
                 sell_fraction,
@@ -240,17 +252,17 @@ class RiskManager:
             reload_buy_allocation_pct_max=self.config.reload_buy_allocation_pct_max,
             thesis_buy_allocation_pct_min=self.config.thesis_buy_allocation_pct_min,
             thesis_buy_allocation_pct_max=self.config.thesis_buy_allocation_pct_max,
-            max_buy_allocation_pct=self.config.max_buy_allocation_pct,
         )
+        explicit_buy_sizing = signal.portfolio_allocation_pct is not None
         watch_mult = 1.0
-        if signal.ticker:
+        if signal.ticker and not explicit_buy_sizing:
             watch_mult = self._watchlist_multiplier(signal.ticker, db, manager_id=manager_id)
 
         target = resolve_buy_notional_usd(
             portfolio_value_usd=portfolio_value_usd,
             allocation_pct=allocation_pct,
             cash_available_usd=cash_available_usd,
-            cash_buffer_pct=self.config.cash_buffer_pct,
+            cash_buffer_pct=0.0 if explicit_buy_sizing else self.config.cash_buffer_pct,
             min_trade_notional_pct=self.config.min_trade_notional_pct,
             min_trade_notional_usd=self.config.min_trade_notional_usd,
             watchlist_multiplier=watch_mult,

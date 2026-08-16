@@ -128,6 +128,19 @@ def migrate_parsed_signals_watch_conviction(engine: Engine) -> None:
         connection.execute(text("ALTER TABLE parsed_signals ADD COLUMN watch_conviction VARCHAR(32)"))
 
 
+def migrate_parsed_signals_target_portfolio_pct(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "parsed_signals" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("parsed_signals")}
+    if "target_portfolio_pct" in existing:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE parsed_signals ADD COLUMN target_portfolio_pct FLOAT"))
+
+
 def migrate_tweet_labels_table(engine: Engine) -> None:
     """Ensure tweet_labels exists on older DBs (create_all also handles fresh DBs)."""
     inspector = inspect(engine)
@@ -143,4 +156,5 @@ def run_migrations(engine: Engine) -> None:
     migrate_parsed_signals_table(engine)
     migrate_recognized_tickers_table(engine)
     migrate_parsed_signals_watch_conviction(engine)
+    migrate_parsed_signals_target_portfolio_pct(engine)
     migrate_tweet_labels_table(engine)

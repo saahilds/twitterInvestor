@@ -222,7 +222,7 @@ def test_annotations_include_late_trade_on_multi_day_range() -> None:
     db.add(trade)
     db.commit()
 
-    now = datetime.now(timezone.utc)
+    now = _et_today_at(23, 0)
     start = portfolio_history.range_start("1w", now)
     session_open, session_end = chart_session_bounds_utc(now)
     window = portfolio_history.resolve_window(
@@ -259,7 +259,7 @@ def test_annotations_exclude_late_trade_on_1d_range() -> None:
     db.add(trade)
     db.commit()
 
-    now = datetime.now(timezone.utc)
+    now = _et_today_at(23, 0)
     start = portfolio_history.range_start("1d", now)
     session_open, session_end = chart_session_bounds_utc(now)
     window = portfolio_history.resolve_window(

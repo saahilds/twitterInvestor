@@ -54,9 +54,9 @@ def test_risk_sells_fraction_of_portfolio_holding(db_session) -> None:
         portfolio_value_usd=10_000.0,
     )
     assert result.allowed
-    assert result.normalized_trade_usd == 497.5
+    assert result.normalized_trade_usd == 500.0
     assert result.sell_fraction == 0.5
-    assert result.sell_quantity == 9.95
+    assert result.sell_quantity == 10.0
     assert result.reason == "sell_50pct_portfolio"
 
 

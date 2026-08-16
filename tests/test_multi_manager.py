@@ -76,7 +76,6 @@ async def test_same_tweet_can_trade_on_two_managers(db_session) -> None:
     )
 
     risk_config = make_risk_config(
-        seed_tickers={"NVDA"},
         cooldown_seconds=0,
         duplicate_window_seconds=0,
     )
@@ -151,7 +150,6 @@ async def test_duplicate_tweet_blocked_per_manager_not_globally(db_session) -> N
     )
 
     risk_config = make_risk_config(
-        seed_tickers={"NVDA"},
         cooldown_seconds=0,
         duplicate_window_seconds=0,
     )

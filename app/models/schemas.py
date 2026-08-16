@@ -31,6 +31,8 @@ class TradeSignal(BaseModel):
     suggested_trade_usd: float = 0.0
     portfolio_allocation_pct: float | None = None
     sell_fraction: float | None = None
+    target_portfolio_pct: float | None = None
+    sell_sizing_explicit: bool = False
     buy_conviction: BuyConviction | None = None
     watch_conviction: WatchConviction | None = None
 
@@ -85,6 +87,7 @@ class ParsedSignalRead(BaseModel):
     suggested_trade_usd: float
     rejection_reason: str | None
     watch_conviction: str | None = None
+    target_portfolio_pct: float | None = None
     manager_id: str
     created_at: datetime
 

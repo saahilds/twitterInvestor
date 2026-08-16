@@ -87,15 +87,14 @@ class AccountManager:
             )
 
         cash_available_usd = None
-        portfolio_value_usd = self.settings.simulation_portfolio_usd
+        # CK sleeve notional for % sizing — never full RH equity.
+        portfolio_value_usd = self.settings.resolved_ck_portfolio_usd
         holding: BrokerHolding | None = None
         if isinstance(self.broker, RobinhoodBroker):
             if signal.action == SignalAction.BUY:
                 cash_available_usd = await asyncio.to_thread(self.broker.get_cash_available_usd)
-                portfolio_value_usd = await self._fetch_portfolio_value()
             elif signal.action == SignalAction.SELL and signal.ticker:
                 holding = await self._fetch_holding(signal.ticker)
-                portfolio_value_usd = await self._fetch_portfolio_value()
 
         with self.session_factory() as db:
             risk_result = self.risk_manager.evaluate(
@@ -120,6 +119,7 @@ class AccountManager:
                 watch_conviction=(
                     signal.watch_conviction.value if signal.watch_conviction is not None else None
                 ),
+                target_portfolio_pct=signal.target_portfolio_pct,
                 manager_id=self.id,
             )
             db.add(parsed_signal)
@@ -462,13 +462,8 @@ class AccountManager:
         )
 
     async def _fetch_portfolio_value(self) -> float:
-        if isinstance(self.broker, RobinhoodBroker):
-            metrics = await asyncio.to_thread(self.broker.get_portfolio_metrics)
-            if metrics.stocks_plus_cash is not None and metrics.stocks_plus_cash > 0:
-                return metrics.stocks_plus_cash
-            if metrics.portfolio_equity is not None and metrics.portfolio_equity > 0:
-                return metrics.portfolio_equity
-        return self.settings.simulation_portfolio_usd
+        """Return CK sleeve notional for % math (legacy helper name kept for callers)."""
+        return self.settings.resolved_ck_portfolio_usd
 
     async def _fetch_holding(self, ticker: str) -> BrokerHolding | None:
         if not isinstance(self.broker, RobinhoodBroker):

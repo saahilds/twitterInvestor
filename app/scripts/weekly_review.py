@@ -82,7 +82,7 @@ def main() -> None:
     engine = create_engine(settings.database_url)
     classifier = ActionClassifier.load() or ActionClassifier.train()
     hybrid = HybridSignalParser(
-        known_tickers=settings.allowed_tickers,
+        known_tickers=settings.known_tickers,
         default_sell_fraction=settings.default_sell_fraction,
         action_classifier=classifier,
         ml_min_confidence=settings.signal_ml_min_confidence,

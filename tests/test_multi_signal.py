@@ -24,6 +24,23 @@ Digging into margin here so will look to trim somewhere else today.
 
 These are some large cap stocks I like that will outweigh some of the high growth we have."""
 
+LITE_VPG_PENG = """Trade
+
+Hey guys,
+
+Few moves.
+
+Added 4.6% port in
+$LITE
+ at 873.14
+
+Trimmed
+$VPG
+ down to 2.1% trimmed at $68.66
+Trimmed
+$PENG
+ down to 2.4% trimmed at $57.23"""
+
 
 def test_segment_multi_ticker_units() -> None:
     segments = segment_trade_units(MULTI_TWEET)
@@ -51,6 +68,7 @@ def test_multi_signal_intc_meta_adea() -> None:
 
     assert by_ticker["ADEA"].action == SignalAction.SELL
     assert by_ticker["ADEA"].sell_fraction == 0.2
+    assert by_ticker["ADEA"].sell_sizing_explicit is True
 
 
 def test_rules_parser_multi_signal() -> None:
@@ -60,3 +78,23 @@ def test_rules_parser_multi_signal() -> None:
     assert by_ticker["INTC"].action == SignalAction.BUY
     assert by_ticker["META"].action == SignalAction.BUY
     assert by_ticker["ADEA"].action == SignalAction.SELL
+
+
+def test_lite_vpg_peng_target_weight_trims() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["LITE", "VPG", "PENG"])
+    signals = parser.parse(LITE_VPG_PENG, source_tweet_id="rebal-1")
+    by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
+
+    assert set(by_ticker) == {"LITE", "VPG", "PENG"}
+    assert by_ticker["LITE"].action == SignalAction.BUY
+    assert by_ticker["LITE"].portfolio_allocation_pct == 4.6
+
+    assert by_ticker["VPG"].action == SignalAction.SELL
+    assert by_ticker["VPG"].target_portfolio_pct == 2.1
+    assert by_ticker["VPG"].sell_fraction is None
+    assert by_ticker["VPG"].sell_sizing_explicit is True
+
+    assert by_ticker["PENG"].action == SignalAction.SELL
+    assert by_ticker["PENG"].target_portfolio_pct == 2.4
+    assert by_ticker["PENG"].sell_fraction is None
+    assert by_ticker["PENG"].sell_sizing_explicit is True
