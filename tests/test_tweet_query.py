@@ -13,11 +13,11 @@ from app.services.tweet_query import (
 )
 
 
-def _tweet(posted_at: datetime, tweet_id: str) -> Tweet:
+def _tweet(posted_at: datetime, tweet_id: str, *, text: str | None = None) -> Tweet:
     return Tweet(
         tweet_id=tweet_id,
         account="test",
-        text=f"tweet {tweet_id}",
+        text=text if text is not None else f"tweet {tweet_id}",
         posted_at=posted_at,
         fetched_at=posted_at,
         is_reply=False,
@@ -178,3 +178,208 @@ def test_fetch_dashboard_tweets_uses_latest_signal_when_multiple(db_session) -> 
         db_session, since=None, until=now, limit=50, signal_filter="buy"
     )
     assert [row.tweet_id for row in rows] == ["multi"]
+
+
+def test_fetch_dashboard_tweets_filters_by_ticker_prefix(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    aapl = _tweet(now - timedelta(hours=1), "aapl")
+    msft = _tweet(now - timedelta(hours=2), "msft")
+    aa = _tweet(now - timedelta(hours=3), "aa")
+    db_session.add_all([aapl, msft, aa])
+    db_session.flush()
+    db_session.add_all(
+        [
+            _signal(aapl, SignalAction.BUY, ticker="AAPL"),
+            _signal(msft, SignalAction.BUY, ticker="MSFT"),
+            _signal(aa, SignalAction.BUY, ticker="AA"),
+        ]
+    )
+    db_session.commit()
+
+    rows = fetch_dashboard_tweets(db_session, since=None, until=now, limit=50, ticker="AA")
+    assert [row.tweet_id for row in rows] == ["aapl", "aa"]
+
+
+def test_fetch_dashboard_tweets_ticker_filter_before_limit(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    old_match = _tweet(now - timedelta(days=5), "old-aapl")
+    recent = [_tweet(now - timedelta(hours=i + 1), f"noise-{i}") for i in range(5)]
+    db_session.add(old_match)
+    db_session.add_all(recent)
+    db_session.flush()
+    db_session.add(_signal(old_match, SignalAction.BUY, ticker="AAPL"))
+    for tweet in recent:
+        db_session.add(_signal(tweet, SignalAction.BUY, ticker="MSFT"))
+    db_session.commit()
+
+    rows = fetch_dashboard_tweets(db_session, since=None, until=now, limit=3, ticker="AAPL")
+    assert [row.tweet_id for row in rows] == ["old-aapl"]
+
+
+def test_fetch_dashboard_tweets_matches_non_latest_signal_ticker(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    tweet = _tweet(now - timedelta(hours=1), "multi-ticker")
+    db_session.add(tweet)
+    db_session.flush()
+    db_session.add_all(
+        [
+            ParsedSignal(
+                tweet=tweet,
+                source_tweet_id=tweet.tweet_id,
+                ticker="AAOI",
+                action=SignalAction.IGNORE,
+                confidence=0.1,
+                strength="none",
+                score=0,
+                raw_text=tweet.text,
+                suggested_trade_usd=0.0,
+                created_at=now - timedelta(minutes=10),
+            ),
+            ParsedSignal(
+                tweet=tweet,
+                source_tweet_id=tweet.tweet_id,
+                ticker="NBIS",
+                action=SignalAction.IGNORE,
+                confidence=0.1,
+                strength="none",
+                score=0,
+                raw_text=tweet.text,
+                suggested_trade_usd=0.0,
+                created_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    rows = fetch_dashboard_tweets(db_session, since=None, until=now, limit=50, ticker="AAOI")
+    assert [row.tweet_id for row in rows] == ["multi-ticker"]
+
+
+def test_fetch_dashboard_tweets_matches_cashtag_in_text(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    body = (
+        "I just want to share some updates on the Autopilot portfolio.\n\n"
+        "$NBIS\n and \n$AAOI\n doing the heavy lifting."
+    )
+    match = _tweet(now - timedelta(hours=1), "holdings", text=body)
+    other = _tweet(now - timedelta(hours=2), "other", text="Holding $MSFT only")
+    db_session.add_all([match, other])
+    db_session.flush()
+    db_session.add_all(
+        [
+            _signal(match, SignalAction.IGNORE, ticker=None),
+            _signal(other, SignalAction.IGNORE, ticker=None),
+        ]
+    )
+    db_session.commit()
+
+    rows = fetch_dashboard_tweets(db_session, since=None, until=now, limit=50, ticker="AAOI")
+    assert [row.tweet_id for row in rows] == ["holdings"]
+
+
+def test_fetch_dashboard_tweets_ticker_text_excludes_unrelated(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    tweet = _tweet(now - timedelta(hours=1), "rk", text="Love $RKLB lately")
+    db_session.add(tweet)
+    db_session.flush()
+    db_session.add(_signal(tweet, SignalAction.WATCH, ticker="RKLB"))
+    db_session.commit()
+
+    rows = fetch_dashboard_tweets(db_session, since=None, until=now, limit=50, ticker="AAOI")
+    assert rows == []
+
+
+def test_text_mentions_ticker_helper() -> None:
+    from app.parsing.ticker_mentions import text_mentions_ticker
+
+    body = "$NBIS\n and \n$AAOI\n doing the heavy lifting."
+    assert text_mentions_ticker(body, "AAOI") is True
+    assert text_mentions_ticker(body, "AA") is True
+    assert text_mentions_ticker(body, "NBIS") is True
+    assert text_mentions_ticker(body, "AMD") is False
+    assert text_mentions_ticker("Bought AMD today", "AMD") is True
+    assert text_mentions_ticker("Bought $AMD today", "amd") is True
+
+
+def test_fetch_dashboard_tweets_traded_filter(db_session) -> None:
+    from app.models.db_models import Trade
+
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    traded_tweet = _tweet(now - timedelta(hours=1), "traded")
+    plain_tweet = _tweet(now - timedelta(hours=2), "plain")
+    db_session.add_all([traded_tweet, plain_tweet])
+    db_session.flush()
+    traded_signal = _signal(traded_tweet, SignalAction.BUY, ticker="AAPL")
+    plain_signal = _signal(plain_tweet, SignalAction.BUY, ticker="MSFT")
+    db_session.add_all([traded_signal, plain_signal])
+    db_session.flush()
+    db_session.add(
+        Trade(
+            parsed_signal_id=traded_signal.id,
+            source_tweet_id=traded_tweet.tweet_id,
+            ticker="AAPL",
+            action=SignalAction.BUY,
+            amount_usd=10.0,
+            status="simulated",
+            simulation=True,
+            manager_id="individual",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    db_session.commit()
+
+    traded = fetch_dashboard_tweets(
+        db_session, since=None, until=now, limit=50, traded_filter="traded"
+    )
+    not_traded = fetch_dashboard_tweets(
+        db_session, since=None, until=now, limit=50, traded_filter="not_traded"
+    )
+    assert [row.tweet_id for row in traded] == ["traded"]
+    assert [row.tweet_id for row in not_traded] == ["plain"]
+
+
+def test_fetch_dashboard_tweets_sort_oldest_and_confidence(db_session) -> None:
+    now = datetime(2026, 6, 16, 12, 0, tzinfo=timezone.utc)
+    low = _tweet(now - timedelta(hours=1), "low")
+    high = _tweet(now - timedelta(hours=2), "high")
+    db_session.add_all([low, high])
+    db_session.flush()
+    db_session.add_all(
+        [
+            ParsedSignal(
+                tweet=low,
+                source_tweet_id=low.tweet_id,
+                ticker="AAPL",
+                action=SignalAction.BUY,
+                confidence=0.2,
+                strength="weak",
+                score=1,
+                raw_text=low.text,
+                suggested_trade_usd=1.0,
+                created_at=low.posted_at,
+            ),
+            ParsedSignal(
+                tweet=high,
+                source_tweet_id=high.tweet_id,
+                ticker="MSFT",
+                action=SignalAction.BUY,
+                confidence=0.95,
+                strength="strong",
+                score=5,
+                raw_text=high.text,
+                suggested_trade_usd=1.0,
+                created_at=high.posted_at,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    oldest = fetch_dashboard_tweets(
+        db_session, since=None, until=now, limit=50, sort="oldest"
+    )
+    by_conf = fetch_dashboard_tweets(
+        db_session, since=None, until=now, limit=50, sort="confidence_desc"
+    )
+    assert [row.tweet_id for row in oldest] == ["high", "low"]
+    assert [row.tweet_id for row in by_conf] == ["high", "low"]

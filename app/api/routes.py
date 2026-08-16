@@ -57,11 +57,29 @@ from app.services.tweet_query import (
     DEFAULT_TWEET_LIMIT,
     DEFAULT_TWEET_RANGE,
     DEFAULT_TWEET_SIGNAL_FILTER,
+    DEFAULT_TWEET_SORT,
+    DEFAULT_TWEET_TRADED_FILTER,
     MAX_TWEET_LIMIT,
     TweetWindowError,
     fetch_dashboard_tweets,
     normalize_signal_filter,
+    normalize_ticker_prefix,
+    normalize_traded_filter,
+    normalize_tweet_sort,
     resolve_tweet_window,
+)
+from app.services.trade_query import (
+    DEFAULT_TRADE_ACTION_FILTER,
+    DEFAULT_TRADE_LIMIT,
+    DEFAULT_TRADE_MODE_FILTER,
+    DEFAULT_TRADE_SORT,
+    DEFAULT_TRADE_STATUS_FILTER,
+    MAX_TRADE_LIMIT,
+    fetch_dashboard_trades,
+    normalize_trade_action_filter,
+    normalize_trade_mode_filter,
+    normalize_trade_sort,
+    normalize_trade_status_filter,
 )
 from app.services.trade_status import TradeStatusSync
 from app.services.worker import BotOrchestrator
@@ -462,6 +480,9 @@ def create_router(
         until: datetime | None = Query(default=None),
         limit: int = Query(default=DEFAULT_TWEET_LIMIT, ge=1, le=MAX_TWEET_LIMIT),
         signal_filter: str = Query(default=DEFAULT_TWEET_SIGNAL_FILTER, alias="signal"),
+        ticker: str | None = Query(default=None),
+        traded_filter: str = Query(default=DEFAULT_TWEET_TRADED_FILTER, alias="traded"),
+        sort: str = Query(default=DEFAULT_TWEET_SORT),
     ) -> list[DashboardTweetRead]:
         try:
             since_dt, until_dt = resolve_tweet_window(
@@ -480,9 +501,51 @@ def create_router(
                 until=until_dt,
                 limit=limit,
                 signal_filter=normalize_signal_filter(signal_filter),
+                ticker=normalize_ticker_prefix(ticker),
+                traded_filter=normalize_traded_filter(traded_filter),
+                sort=normalize_tweet_sort(sort),
             )
             feedback = _feedback_map(db)
         return [_tweet_to_dashboard_read(row, feedback) for row in rows]
+
+    @router.get("/dashboard/trades", response_model=list[TradeRead])
+    async def dashboard_trades(
+        range_key: str = Query(default=DEFAULT_TWEET_RANGE, alias="range"),
+        since: datetime | None = Query(default=None),
+        until: datetime | None = Query(default=None),
+        limit: int = Query(default=DEFAULT_TRADE_LIMIT, ge=1, le=MAX_TRADE_LIMIT),
+        ticker: str | None = Query(default=None),
+        action_filter: str = Query(default=DEFAULT_TRADE_ACTION_FILTER, alias="action"),
+        status_filter: str = Query(default=DEFAULT_TRADE_STATUS_FILTER, alias="status"),
+        mode_filter: str = Query(default=DEFAULT_TRADE_MODE_FILTER, alias="mode"),
+        sort: str = Query(default=DEFAULT_TRADE_SORT),
+        manager: str | None = Query(default=None),
+    ) -> list[TradeRead]:
+        try:
+            since_dt, until_dt = resolve_tweet_window(
+                range_key=range_key,
+                since=since,
+                until=until,
+                now=datetime.now(timezone.utc),
+            )
+        except TweetWindowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        manager_id = _resolve_manager_id(manager)
+        with session_factory() as db:
+            rows = fetch_dashboard_trades(
+                db,
+                manager_id=manager_id,
+                since=since_dt,
+                until=until_dt,
+                limit=limit,
+                ticker=normalize_ticker_prefix(ticker),
+                action_filter=normalize_trade_action_filter(action_filter),
+                status_filter=normalize_trade_status_filter(status_filter),
+                mode_filter=normalize_trade_mode_filter(mode_filter),
+                sort=normalize_trade_sort(sort),
+            )
+        return [TradeRead.model_validate(row) for row in rows]
 
     @router.get("/dashboard/data", response_model=DashboardSnapshot)
     async def dashboard_data(

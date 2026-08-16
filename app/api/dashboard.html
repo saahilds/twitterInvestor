@@ -508,6 +508,117 @@
           </h3>
           <div id="balanceChartRoot"></div>
         </div>
+      </section>
+
+      <section class="section" aria-label="Daily digest">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Today's digest</h2>
+            <span class="hint" id="digestStatus">—</span>
+          </div>
+          <pre id="digestBody" style="white-space:pre-wrap;font-size:0.85rem;margin:0;max-height:28rem;overflow:auto;color:var(--text)"></pre>
+          <p class="empty" id="digestEmpty" style="display:none">No trade alerts or executed trades yet today.</p>
+        </div>
+      </section>
+
+      <section class="section grid-2" aria-label="Activity">
+        <div class="panel">
+          <h3>Recent tweets</h3>
+          <p class="hint" style="margin:0 0 0.5rem">Wrong labels train the parser only — they do not affect live orders.</p>
+          <div class="table-toolbar" id="tweetRangeToolbar">
+            <select id="tweetRange" aria-label="Tweet time range">
+              <option value="1d">1 Day</option>
+              <option value="1w" selected>1 Week</option>
+              <option value="1m">1 Month</option>
+              <option value="3m">3 Months</option>
+              <option value="ytd">YTD</option>
+              <option value="all">All</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <select id="tweetSignalFilter" aria-label="Tweet signal filter">
+              <option value="all" selected>All signals</option>
+              <option value="alerts">Trade alerts</option>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+              <option value="watch">Watch</option>
+              <option value="ignore">Ignored</option>
+            </select>
+            <input type="search" id="tweetTickerFilter" placeholder="Ticker…" aria-label="Tweet ticker filter" style="max-width:7rem" />
+            <select id="tweetTradedFilter" aria-label="Tweet traded filter">
+              <option value="all" selected>All tweets</option>
+              <option value="traded">Traded</option>
+              <option value="not_traded">Not traded</option>
+            </select>
+            <select id="tweetSort" aria-label="Tweet sort">
+              <option value="newest" selected>Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="ticker_asc">Ticker A–Z</option>
+              <option value="ticker_desc">Ticker Z–A</option>
+              <option value="confidence_desc">Confidence</option>
+            </select>
+            <span class="hint" id="tweetRangeMeta"></span>
+          </div>
+          <div class="table-toolbar" id="tweetCustomRange" style="display:none">
+            <input type="datetime-local" id="tweetSince" aria-label="Tweet range start" />
+            <span class="hint">–</span>
+            <input type="datetime-local" id="tweetUntil" aria-label="Tweet range end" />
+            <button type="button" id="tweetCustomApply">Apply</button>
+          </div>
+          <ul class="feed" id="tweetFeed"></ul>
+          <p class="empty" id="tweetEmpty" style="display:none">No tweets match this filter.</p>
+        </div>
+        <div class="panel">
+          <h3>Recent trades</h3>
+          <div class="table-toolbar" id="tradeRangeToolbar">
+            <select id="tradeRange" aria-label="Trade time range">
+              <option value="1d">1 Day</option>
+              <option value="1w" selected>1 Week</option>
+              <option value="1m">1 Month</option>
+              <option value="3m">3 Months</option>
+              <option value="ytd">YTD</option>
+              <option value="all">All</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input type="search" id="tradeTickerFilter" placeholder="Ticker…" aria-label="Trade ticker filter" style="max-width:7rem" />
+            <select id="tradeActionFilter" aria-label="Trade action filter">
+              <option value="all" selected>All actions</option>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+            </select>
+            <select id="tradeStatusFilter" aria-label="Trade status filter">
+              <option value="all" selected>All statuses</option>
+              <option value="filled">Filled</option>
+              <option value="submitted">Submitted</option>
+              <option value="simulated">Simulated</option>
+              <option value="rejected">Rejected</option>
+              <option value="failed">Failed</option>
+            </select>
+            <select id="tradeModeFilter" aria-label="Trade mode filter">
+              <option value="all" selected>Live + sim</option>
+              <option value="live">Live</option>
+              <option value="sim">Simulation</option>
+            </select>
+            <select id="tradeSort" aria-label="Trade sort">
+              <option value="newest" selected>Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="ticker_asc">Ticker A–Z</option>
+              <option value="ticker_desc">Ticker Z–A</option>
+              <option value="amount_desc">Amount</option>
+            </select>
+            <span class="hint" id="tradeRangeMeta"></span>
+          </div>
+          <div class="table-toolbar" id="tradeCustomRange" style="display:none">
+            <input type="datetime-local" id="tradeSince" aria-label="Trade range start" />
+            <span class="hint">–</span>
+            <input type="datetime-local" id="tradeUntil" aria-label="Trade range end" />
+            <button type="button" id="tradeCustomApply">Apply</button>
+          </div>
+          <ul class="feed" id="tradeFeed"></ul>
+          <p class="empty" id="tradeEmpty" style="display:none">No trades match this filter.</p>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Robinhood positions">
         <div class="panel">
           <h3>Open positions</h3>
           <div class="table-toolbar">
@@ -574,57 +685,6 @@
         </div>
       </section>
 
-      <section class="section" aria-label="Daily digest">
-        <div class="panel">
-          <div class="section-head">
-            <h2>Today's digest</h2>
-            <span class="hint" id="digestStatus">—</span>
-          </div>
-          <pre id="digestBody" style="white-space:pre-wrap;font-size:0.85rem;margin:0;max-height:28rem;overflow:auto;color:var(--text)"></pre>
-          <p class="empty" id="digestEmpty" style="display:none">No trade alerts or executed trades yet today.</p>
-        </div>
-      </section>
-
-      <section class="section grid-2" aria-label="Activity">
-        <div class="panel">
-          <h3>Recent tweets</h3>
-          <p class="hint" style="margin:0 0 0.5rem">Wrong labels train the parser only — they do not affect live orders.</p>
-          <div class="table-toolbar" id="tweetRangeToolbar">
-            <select id="tweetRange" aria-label="Tweet time range">
-              <option value="1d">1 Day</option>
-              <option value="1w" selected>1 Week</option>
-              <option value="1m">1 Month</option>
-              <option value="3m">3 Months</option>
-              <option value="ytd">YTD</option>
-              <option value="all">All</option>
-              <option value="custom">Custom…</option>
-            </select>
-            <select id="tweetSignalFilter" aria-label="Tweet signal filter">
-              <option value="all" selected>All signals</option>
-              <option value="alerts">Trade alerts</option>
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-              <option value="watch">Watch</option>
-              <option value="ignore">Ignored</option>
-            </select>
-            <span class="hint" id="tweetRangeMeta"></span>
-          </div>
-          <div class="table-toolbar" id="tweetCustomRange" style="display:none">
-            <input type="datetime-local" id="tweetSince" aria-label="Tweet range start" />
-            <span class="hint">–</span>
-            <input type="datetime-local" id="tweetUntil" aria-label="Tweet range end" />
-            <button type="button" id="tweetCustomApply">Apply</button>
-          </div>
-          <ul class="feed" id="tweetFeed"></ul>
-          <p class="empty" id="tweetEmpty" style="display:none">No tweets match this filter.</p>
-        </div>
-        <div class="panel">
-          <h3>Recent trades</h3>
-          <ul class="feed" id="tradeFeed"></ul>
-          <p class="empty" id="tradeEmpty" style="display:none">No trades yet.</p>
-        </div>
-      </section>
-
       <details class="panel tickers-panel" open>
         <summary>Watchlist (<span id="watchlistCount">0</span>)</summary>
         <div class="chips" id="watchlistChips"></div>
@@ -664,7 +724,20 @@
     let tweetCustomSince = null;
     let tweetCustomUntil = null;
     let tweetSignalFilter = "all";
+    let tweetTickerFilter = "";
+    let tweetTradedFilter = "all";
+    let tweetSort = "newest";
+    let tradeRangePreset = "1w";
+    let tradeCustomSince = null;
+    let tradeCustomUntil = null;
+    let tradeTickerFilter = "";
+    let tradeActionFilter = "all";
+    let tradeStatusFilter = "all";
+    let tradeModeFilter = "all";
+    let tradeSort = "newest";
     let activeManager = null;
+    let tweetTickerDebounce = null;
+    let tradeTickerDebounce = null;
 
     const MANAGER_LABELS = {
       individual: "Individual",
@@ -686,6 +759,43 @@
       sell: "Sell",
       watch: "Watch",
       ignore: "Ignored",
+    };
+    const TWEET_TRADED_LABELS = {
+      all: "All tweets",
+      traded: "Traded",
+      not_traded: "Not traded",
+    };
+    const TWEET_SORT_LABELS = {
+      newest: "Newest",
+      oldest: "Oldest",
+      ticker_asc: "Ticker A–Z",
+      ticker_desc: "Ticker Z–A",
+      confidence_desc: "Confidence",
+    };
+    const TRADE_ACTION_LABELS = {
+      all: "All actions",
+      buy: "Buy",
+      sell: "Sell",
+    };
+    const TRADE_STATUS_LABELS = {
+      all: "All statuses",
+      filled: "Filled",
+      submitted: "Submitted",
+      simulated: "Simulated",
+      rejected: "Rejected",
+      failed: "Failed",
+    };
+    const TRADE_MODE_LABELS = {
+      all: "Live + sim",
+      live: "Live",
+      sim: "Simulation",
+    };
+    const TRADE_SORT_LABELS = {
+      newest: "Newest",
+      oldest: "Oldest",
+      ticker_asc: "Ticker A–Z",
+      ticker_desc: "Ticker Z–A",
+      amount_desc: "Amount",
     };
     const managerQuery = () => {
       const manager = activeManager || "individual";
@@ -787,10 +897,13 @@
       const since = new Date(until.getTime() - 7 * 24 * 60 * 60 * 1000);
       return { since: since.toISOString(), until: until.toISOString() };
     };
-    const saveTweetRangeState = () => {
+    const saveTweetFilterState = () => {
       try {
         localStorage.setItem("tweetRangePreset", tweetRangePreset);
         localStorage.setItem("tweetSignalFilter", tweetSignalFilter);
+        localStorage.setItem("tweetTickerFilter", tweetTickerFilter);
+        localStorage.setItem("tweetTradedFilter", tweetTradedFilter);
+        localStorage.setItem("tweetSort", tweetSort);
         if (tweetRangePreset === "custom") {
           localStorage.setItem("tweetSince", tweetCustomSince || "");
           localStorage.setItem("tweetUntil", tweetCustomUntil || "");
@@ -799,12 +912,17 @@
         /* ignore storage errors */
       }
     };
-    const loadTweetRangeState = () => {
+    const loadTweetFilterState = () => {
       try {
         const preset = localStorage.getItem("tweetRangePreset");
         if (preset) tweetRangePreset = preset;
         const signal = localStorage.getItem("tweetSignalFilter");
         if (signal) tweetSignalFilter = signal;
+        tweetTickerFilter = localStorage.getItem("tweetTickerFilter") || "";
+        const traded = localStorage.getItem("tweetTradedFilter");
+        if (traded) tweetTradedFilter = traded;
+        const sort = localStorage.getItem("tweetSort");
+        if (sort) tweetSort = sort;
         tweetCustomSince = localStorage.getItem("tweetSince") || null;
         tweetCustomUntil = localStorage.getItem("tweetUntil") || null;
       } catch {
@@ -814,6 +932,12 @@
       if (select) select.value = tweetRangePreset;
       const signalSelect = document.getElementById("tweetSignalFilter");
       if (signalSelect) signalSelect.value = tweetSignalFilter;
+      const tickerInput = document.getElementById("tweetTickerFilter");
+      if (tickerInput) tickerInput.value = tweetTickerFilter;
+      const tradedSelect = document.getElementById("tweetTradedFilter");
+      if (tradedSelect) tradedSelect.value = tweetTradedFilter;
+      const sortSelect = document.getElementById("tweetSort");
+      if (sortSelect) sortSelect.value = tweetSort;
       updateTweetCustomPanel();
     };
     const updateTweetCustomPanel = () => {
@@ -830,18 +954,30 @@
       document.getElementById("tweetUntil").value = isoToLocalDatetime(tweetCustomUntil);
     };
     const buildTweetFetchUrl = () => {
-      const signal = encodeURIComponent(tweetSignalFilter);
+      const params = new URLSearchParams();
+      params.set("signal", tweetSignalFilter);
+      params.set("traded", tweetTradedFilter);
+      params.set("sort", tweetSort);
+      if (tweetTickerFilter.trim()) params.set("ticker", tweetTickerFilter.trim());
       if (tweetRangePreset === "custom") {
-        const since = encodeURIComponent(tweetCustomSince || "");
-        const until = encodeURIComponent(tweetCustomUntil || "");
-        return `/dashboard/tweets?since=${since}&until=${until}&signal=${signal}`;
+        params.set("since", tweetCustomSince || "");
+        params.set("until", tweetCustomUntil || "");
+      } else {
+        params.set("range", tweetRangePreset);
       }
-      return `/dashboard/tweets?range=${encodeURIComponent(tweetRangePreset)}&signal=${signal}`;
+      return `/dashboard/tweets?${params.toString()}`;
     };
     const describeTweetFilters = () => {
       const parts = [describeTweetRange()];
       if (tweetSignalFilter !== "all") {
         parts.push(TWEET_SIGNAL_LABELS[tweetSignalFilter] || tweetSignalFilter);
+      }
+      if (tweetTickerFilter.trim()) parts.push(tweetTickerFilter.trim().toUpperCase());
+      if (tweetTradedFilter !== "all") {
+        parts.push(TWEET_TRADED_LABELS[tweetTradedFilter] || tweetTradedFilter);
+      }
+      if (tweetSort !== "newest") {
+        parts.push(TWEET_SORT_LABELS[tweetSort] || tweetSort);
       }
       return parts.join(" · ");
     };
@@ -851,6 +987,112 @@
       }
       return TWEET_RANGE_LABELS[tweetRangePreset] || tweetRangePreset;
     };
+    const saveTradeFilterState = () => {
+      try {
+        localStorage.setItem("tradeRangePreset", tradeRangePreset);
+        localStorage.setItem("tradeTickerFilter", tradeTickerFilter);
+        localStorage.setItem("tradeActionFilter", tradeActionFilter);
+        localStorage.setItem("tradeStatusFilter", tradeStatusFilter);
+        localStorage.setItem("tradeModeFilter", tradeModeFilter);
+        localStorage.setItem("tradeSort", tradeSort);
+        if (tradeRangePreset === "custom") {
+          localStorage.setItem("tradeSince", tradeCustomSince || "");
+          localStorage.setItem("tradeUntil", tradeCustomUntil || "");
+        }
+      } catch {
+        /* ignore storage errors */
+      }
+    };
+    const loadTradeFilterState = () => {
+      try {
+        const preset = localStorage.getItem("tradeRangePreset");
+        if (preset) tradeRangePreset = preset;
+        tradeTickerFilter = localStorage.getItem("tradeTickerFilter") || "";
+        const action = localStorage.getItem("tradeActionFilter");
+        if (action) tradeActionFilter = action;
+        const status = localStorage.getItem("tradeStatusFilter");
+        if (status) tradeStatusFilter = status;
+        const mode = localStorage.getItem("tradeModeFilter");
+        if (mode) tradeModeFilter = mode;
+        const sort = localStorage.getItem("tradeSort");
+        if (sort) tradeSort = sort;
+        tradeCustomSince = localStorage.getItem("tradeSince") || null;
+        tradeCustomUntil = localStorage.getItem("tradeUntil") || null;
+      } catch {
+        /* ignore storage errors */
+      }
+      const select = document.getElementById("tradeRange");
+      if (select) select.value = tradeRangePreset;
+      const tickerInput = document.getElementById("tradeTickerFilter");
+      if (tickerInput) tickerInput.value = tradeTickerFilter;
+      const actionSelect = document.getElementById("tradeActionFilter");
+      if (actionSelect) actionSelect.value = tradeActionFilter;
+      const statusSelect = document.getElementById("tradeStatusFilter");
+      if (statusSelect) statusSelect.value = tradeStatusFilter;
+      const modeSelect = document.getElementById("tradeModeFilter");
+      if (modeSelect) modeSelect.value = tradeModeFilter;
+      const sortSelect = document.getElementById("tradeSort");
+      if (sortSelect) sortSelect.value = tradeSort;
+      updateTradeCustomPanel();
+    };
+    const updateTradeCustomPanel = () => {
+      const customPanel = document.getElementById("tradeCustomRange");
+      const isCustom = tradeRangePreset === "custom";
+      customPanel.style.display = isCustom ? "flex" : "none";
+      if (!isCustom) return;
+      if (!tradeCustomSince || !tradeCustomUntil) {
+        const defaults = defaultCustomTweetRange();
+        tradeCustomSince = defaults.since;
+        tradeCustomUntil = defaults.until;
+      }
+      document.getElementById("tradeSince").value = isoToLocalDatetime(tradeCustomSince);
+      document.getElementById("tradeUntil").value = isoToLocalDatetime(tradeCustomUntil);
+    };
+    const buildTradeFetchUrl = () => {
+      const params = new URLSearchParams();
+      params.set("action", tradeActionFilter);
+      params.set("status", tradeStatusFilter);
+      params.set("mode", tradeModeFilter);
+      params.set("sort", tradeSort);
+      if (tradeTickerFilter.trim()) params.set("ticker", tradeTickerFilter.trim());
+      if (tradeRangePreset === "custom") {
+        params.set("since", tradeCustomSince || "");
+        params.set("until", tradeCustomUntil || "");
+      } else {
+        params.set("range", tradeRangePreset);
+      }
+      return `/dashboard/trades?${params.toString()}&${managerQuery()}`;
+    };
+    const describeTradeFilters = () => {
+      const parts = [describeTradeRange()];
+      if (tradeTickerFilter.trim()) parts.push(tradeTickerFilter.trim().toUpperCase());
+      if (tradeActionFilter !== "all") {
+        parts.push(TRADE_ACTION_LABELS[tradeActionFilter] || tradeActionFilter);
+      }
+      if (tradeStatusFilter !== "all") {
+        parts.push(TRADE_STATUS_LABELS[tradeStatusFilter] || tradeStatusFilter);
+      }
+      if (tradeModeFilter !== "all") {
+        parts.push(TRADE_MODE_LABELS[tradeModeFilter] || tradeModeFilter);
+      }
+      if (tradeSort !== "newest") {
+        parts.push(TRADE_SORT_LABELS[tradeSort] || tradeSort);
+      }
+      return parts.join(" · ");
+    };
+    const describeTradeRange = () => {
+      if (tradeRangePreset === "custom") {
+        return `${fmtShortDate(tradeCustomSince)} – ${fmtShortDate(tradeCustomUntil)}`;
+      }
+      return TWEET_RANGE_LABELS[tradeRangePreset] || tradeRangePreset;
+    };
+    const showFeedError = (message) => {
+      const banner = document.getElementById("errorBanner");
+      banner.style.display = "block";
+      banner.textContent = message;
+    };
+    const reloadTweets = () => loadTweets().catch((err) => showFeedError(`Tweet fetch failed: ${err.message}`));
+    const reloadTrades = () => loadTrades().catch((err) => showFeedError(`Trade fetch failed: ${err.message}`));
     const tweetTimeTitle = (t) => {
       const posted = fmtTime(t.posted_at);
       if (!t.fetched_at || t.fetched_at === t.posted_at) return posted;
@@ -1136,6 +1378,14 @@
       return tweets;
     }
 
+    async function loadTrades() {
+      const res = await fetch(buildTradeFetchUrl());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const trades = await res.json();
+      renderTrades(trades);
+      return trades;
+    }
+
     async function loadActivity() {
       const liveOnly = document.getElementById("liveOnly").checked;
       const res = await fetch(
@@ -1148,7 +1398,7 @@
       applyRefreshIntervals(data.health);
       syncActiveManagerFromData(data);
       renderActivity(dashboardState);
-      await loadTweets();
+      await Promise.all([loadTweets(), loadTrades()]);
       activityCountdown = Math.round(ACTIVITY_MS / 1000);
       return data;
     }
@@ -1250,7 +1500,6 @@
       document.getElementById("pauseBtn").disabled = h.worker_paused || !h.worker_running;
       document.getElementById("resumeBtn").disabled = !h.worker_paused;
 
-      renderTrades(data);
       renderWatchlist(data.watchlist || []);
       renderDigest(data.daily_digest || null);
       allTickers = data.recognized_tickers || [];
@@ -1357,11 +1606,15 @@
       });
     }
 
-    function renderTrades(data) {
+    function renderTrades(trades) {
       const tradeFeed = document.getElementById("tradeFeed");
       tradeFeed.innerHTML = "";
-      document.getElementById("tradeEmpty").style.display = data.recent_trades.length ? "none" : "block";
-      for (const tr of data.recent_trades) {
+      document.getElementById("tradeEmpty").style.display = trades.length ? "none" : "block";
+      document.getElementById("tradeRangeMeta").textContent =
+        trades.length
+          ? `${trades.length} trade${trades.length === 1 ? "" : "s"} · ${describeTradeFilters()}`
+          : describeTradeFilters();
+      for (const tr of trades) {
         const li = document.createElement("li");
         const sim = tr.simulation ? '<span class="badge sim">sim</span>' : '<span class="badge live">live</span>';
         const action = tr.action === "BUY"
@@ -1455,24 +1708,30 @@
 
     document.getElementById("tweetRange").addEventListener("change", (e) => {
       tweetRangePreset = e.target.value;
-      saveTweetRangeState();
+      saveTweetFilterState();
       updateTweetCustomPanel();
-      if (tweetRangePreset !== "custom") {
-        loadTweets().catch((err) => {
-          const banner = document.getElementById("errorBanner");
-          banner.style.display = "block";
-          banner.textContent = `Tweet fetch failed: ${err.message}`;
-        });
-      }
+      if (tweetRangePreset !== "custom") reloadTweets();
     });
     document.getElementById("tweetSignalFilter").addEventListener("change", (e) => {
       tweetSignalFilter = e.target.value;
-      saveTweetRangeState();
-      loadTweets().catch((err) => {
-        const banner = document.getElementById("errorBanner");
-        banner.style.display = "block";
-        banner.textContent = `Tweet fetch failed: ${err.message}`;
-      });
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetTradedFilter").addEventListener("change", (e) => {
+      tweetTradedFilter = e.target.value;
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetSort").addEventListener("change", (e) => {
+      tweetSort = e.target.value;
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetTickerFilter").addEventListener("input", (e) => {
+      tweetTickerFilter = e.target.value;
+      saveTweetFilterState();
+      clearTimeout(tweetTickerDebounce);
+      tweetTickerDebounce = setTimeout(reloadTweets, 250);
     });
     document.getElementById("tweetCustomApply").addEventListener("click", () => {
       const sinceIso = localDatetimeToIso(document.getElementById("tweetSince").value);
@@ -1487,12 +1746,56 @@
       }
       tweetCustomSince = sinceIso;
       tweetCustomUntil = untilIso;
-      saveTweetRangeState();
-      loadTweets().catch((err) => {
-        const banner = document.getElementById("errorBanner");
-        banner.style.display = "block";
-        banner.textContent = `Tweet fetch failed: ${err.message}`;
-      });
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tradeRange").addEventListener("change", (e) => {
+      tradeRangePreset = e.target.value;
+      saveTradeFilterState();
+      updateTradeCustomPanel();
+      if (tradeRangePreset !== "custom") reloadTrades();
+    });
+    document.getElementById("tradeActionFilter").addEventListener("change", (e) => {
+      tradeActionFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeStatusFilter").addEventListener("change", (e) => {
+      tradeStatusFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeModeFilter").addEventListener("change", (e) => {
+      tradeModeFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeSort").addEventListener("change", (e) => {
+      tradeSort = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeTickerFilter").addEventListener("input", (e) => {
+      tradeTickerFilter = e.target.value;
+      saveTradeFilterState();
+      clearTimeout(tradeTickerDebounce);
+      tradeTickerDebounce = setTimeout(reloadTrades, 250);
+    });
+    document.getElementById("tradeCustomApply").addEventListener("click", () => {
+      const sinceIso = localDatetimeToIso(document.getElementById("tradeSince").value);
+      const untilIso = localDatetimeToIso(document.getElementById("tradeUntil").value);
+      if (!sinceIso || !untilIso) {
+        alert("Enter both start and end date/time.");
+        return;
+      }
+      if (new Date(sinceIso) >= new Date(untilIso)) {
+        alert("Start must be before end.");
+        return;
+      }
+      tradeCustomSince = sinceIso;
+      tradeCustomUntil = untilIso;
+      saveTradeFilterState();
+      reloadTrades();
     });
     document.getElementById("managerSelect").addEventListener("change", (e) => {
       activeManager = e.target.value;
@@ -1534,7 +1837,8 @@
 
     initBalanceChart();
     loadActiveManagerState();
-    loadTweetRangeState();
+    loadTweetFilterState();
+    loadTradeFilterState();
     load();
     startCountdown();
   </script>
