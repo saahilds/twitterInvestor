@@ -16,6 +16,7 @@ def utc_now() -> datetime:
 class SignalAction(str, enum.Enum):
     BUY = "BUY"
     SELL = "SELL"
+    WATCH = "WATCH"
     IGNORE = "IGNORE"
 
 
@@ -44,6 +45,17 @@ class RecognizedTicker(Base):
     source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
+class WatchlistEntry(Base):
+    __tablename__ = "watchlist"
+
+    manager_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), primary_key=True)
+    conviction_score: Mapped[float] = mapped_column(Float, default=0.0)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    source_tweet_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    watch_conviction: Mapped[str] = mapped_column(String(32), default="watch")
+
+
 class ParsedSignal(Base):
     __tablename__ = "parsed_signals"
 
@@ -58,6 +70,10 @@ class ParsedSignal(Base):
     raw_text: Mapped[str] = mapped_column(Text)
     suggested_trade_usd: Mapped[float] = mapped_column(Float, default=0.0)
     rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    watch_conviction: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    target_portfolio_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    review_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
@@ -112,3 +128,54 @@ class ExecutionLog(Base):
     message: Mapped[str] = mapped_column(String(255))
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class TweetLabel(Base):
+    """Human ground-truth labels (distinct from parsed_signals predictions)."""
+
+    __tablename__ = "tweet_labels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tweet_id: Mapped[str] = mapped_column(String(64), index=True)
+    ticker: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    segment_text: Mapped[str] = mapped_column(Text)
+    allocation_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    sell_fraction: Mapped[float | None] = mapped_column(Float, nullable=True)
+    labeled_by: Mapped[str] = mapped_column(String(64), default="human")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class ParserFeedback(Base):
+    """Dashboard Wrong-label corrections for training (does not affect live orders)."""
+
+    __tablename__ = "parser_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tweet_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    tweet_text: Mapped[str] = mapped_column(Text)
+    parser_action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    parser_ticker: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    correct_action: Mapped[SignalAction] = mapped_column(Enum(SignalAction), index=True)
+    note: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    exported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class DailyDigest(Base):
+    """Progressive intraday digest rebuilt from existing DB rows only."""
+
+    __tablename__ = "daily_digests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    digest_date: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="in_progress", index=True)
+    current_period: Mapped[str] = mapped_column(String(32), default="premarket")
+    periods_json: Mapped[str] = mapped_column(Text, default="{}")
+    tweet_count: Mapped[int] = mapped_column(Integer, default=0)
+    trade_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    informational_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_rebuilt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    webhook_checkpoints_json: Mapped[str] = mapped_column(Text, default="{}")

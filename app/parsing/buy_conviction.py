@@ -34,6 +34,13 @@ class BuyConviction(str, Enum):
     THESIS = "thesis"
 
 
+def parse_portfolio_weight_pct(text: str) -> float | None:
+    """Extract explicit portfolio weight % (alias used by sizing / audit)."""
+    from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
+
+    return infer_portfolio_allocation_pct(text)
+
+
 def infer_buy_conviction(text: str) -> BuyConviction:
     """Classify buy tweet conviction for trade sizing."""
     snippet = extract_action_snippet(text).lower()

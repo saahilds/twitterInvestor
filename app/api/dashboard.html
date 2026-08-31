@@ -205,6 +205,7 @@
     }
     .badge.buy { background: rgba(52, 211, 153, 0.15); color: var(--green); }
     .badge.sell { background: rgba(248, 113, 113, 0.15); color: var(--red); }
+    .badge.watch { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
     .badge.ignore { background: #334155; color: var(--muted); }
     .badge.sim { background: #334155; color: var(--muted); }
     .badge.live { background: rgba(96, 165, 250, 0.15); color: var(--blue); }
@@ -222,7 +223,7 @@
       border: 1px solid var(--border);
       color: var(--text);
     }
-    #errorBanner, #workerBanner {
+    #errorBanner, #workerBanner, #reauthBanner {
       display: none;
       padding: 0.65rem 1rem;
       border-radius: 8px;
@@ -232,6 +233,9 @@
     }
     #errorBanner { background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: #fecaca; }
     #workerBanner { background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.35); color: #fde68a; }
+    #reauthBanner.info { background: rgba(96, 165, 250, 0.12); border: 1px solid rgba(96, 165, 250, 0.4); color: #bfdbfe; }
+    #reauthBanner.ok { background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.4); color: #a7f3d0; }
+    #reauthBanner.bad { background: rgba(248, 113, 113, 0.12); border: 1px solid rgba(248, 113, 113, 0.4); color: #fecaca; }
     .empty { color: var(--muted); font-style: italic; font-size: 0.8125rem; padding: 0.5rem 0; }
     .ticker-cell strong { font-weight: 650; letter-spacing: 0.02em; }
     details.tickers-panel summary {
@@ -472,12 +476,14 @@
         </label>
         <button type="button" id="pauseBtn">Pause</button>
         <button type="button" id="resumeBtn">Resume</button>
+        <button type="button" id="reauthBtn">Refresh RH auth</button>
         <button type="button" class="primary" id="refreshBtn">Refresh</button>
       </div>
     </header>
 
     <div id="errorBanner"></div>
     <div id="workerBanner"></div>
+    <div id="reauthBanner"></div>
 
     <main>
       <section class="section" aria-label="Robinhood account">
@@ -502,6 +508,129 @@
           </h3>
           <div id="balanceChartRoot"></div>
         </div>
+      </section>
+
+      <section class="section" aria-label="Daily digest">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Today's digest</h2>
+            <span class="hint" id="digestStatus">—</span>
+          </div>
+          <pre id="digestBody" style="white-space:pre-wrap;font-size:0.85rem;margin:0;max-height:28rem;overflow:auto;color:var(--text)"></pre>
+          <p class="empty" id="digestEmpty" style="display:none">No trade alerts or executed trades yet today.</p>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Uncertain trade alerts">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Uncertain trade alerts</h2>
+            <span class="hint" id="reviewQueueMeta">—</span>
+          </div>
+          <p class="hint" style="margin:0 0 0.5rem">Low-confidence Trade-header picks already executed — confirm BUY/SELL to train the parser.</p>
+          <ul class="feed" id="reviewQueueFeed"></ul>
+          <p class="empty" id="reviewQueueEmpty">Queue clear — no uncertain trade alerts.</p>
+        </div>
+      </section>
+
+      <section class="section grid-2" aria-label="Activity">
+        <div class="panel">
+          <h3>Recent tweets</h3>
+          <p class="hint" style="margin:0 0 0.5rem">Wrong labels train the parser only — they do not affect live orders.</p>
+          <div class="table-toolbar" id="tweetRangeToolbar">
+            <select id="tweetRange" aria-label="Tweet time range">
+              <option value="1d">1 Day</option>
+              <option value="1w" selected>1 Week</option>
+              <option value="1m">1 Month</option>
+              <option value="3m">3 Months</option>
+              <option value="ytd">YTD</option>
+              <option value="all">All</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <select id="tweetSignalFilter" aria-label="Tweet signal filter">
+              <option value="all" selected>All signals</option>
+              <option value="alerts">Trade alerts</option>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+              <option value="watch">Watch</option>
+              <option value="ignore">Ignored</option>
+            </select>
+            <input type="search" id="tweetTickerFilter" placeholder="Ticker…" aria-label="Tweet ticker filter" style="max-width:7rem" />
+            <select id="tweetTradedFilter" aria-label="Tweet traded filter">
+              <option value="all" selected>All tweets</option>
+              <option value="traded">Traded</option>
+              <option value="not_traded">Not traded</option>
+            </select>
+            <select id="tweetSort" aria-label="Tweet sort">
+              <option value="newest" selected>Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="ticker_asc">Ticker A–Z</option>
+              <option value="ticker_desc">Ticker Z–A</option>
+              <option value="confidence_desc">Confidence</option>
+            </select>
+            <span class="hint" id="tweetRangeMeta"></span>
+          </div>
+          <div class="table-toolbar" id="tweetCustomRange" style="display:none">
+            <input type="datetime-local" id="tweetSince" aria-label="Tweet range start" />
+            <span class="hint">–</span>
+            <input type="datetime-local" id="tweetUntil" aria-label="Tweet range end" />
+            <button type="button" id="tweetCustomApply">Apply</button>
+          </div>
+          <ul class="feed" id="tweetFeed"></ul>
+          <p class="empty" id="tweetEmpty" style="display:none">No tweets match this filter.</p>
+        </div>
+        <div class="panel">
+          <h3>Recent trades</h3>
+          <div class="table-toolbar" id="tradeRangeToolbar">
+            <select id="tradeRange" aria-label="Trade time range">
+              <option value="1d">1 Day</option>
+              <option value="1w" selected>1 Week</option>
+              <option value="1m">1 Month</option>
+              <option value="3m">3 Months</option>
+              <option value="ytd">YTD</option>
+              <option value="all">All</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input type="search" id="tradeTickerFilter" placeholder="Ticker…" aria-label="Trade ticker filter" style="max-width:7rem" />
+            <select id="tradeActionFilter" aria-label="Trade action filter">
+              <option value="all" selected>All actions</option>
+              <option value="buy">Buy</option>
+              <option value="sell">Sell</option>
+            </select>
+            <select id="tradeStatusFilter" aria-label="Trade status filter">
+              <option value="all" selected>All statuses</option>
+              <option value="filled">Filled</option>
+              <option value="submitted">Submitted</option>
+              <option value="simulated">Simulated</option>
+              <option value="rejected">Rejected</option>
+              <option value="failed">Failed</option>
+            </select>
+            <select id="tradeModeFilter" aria-label="Trade mode filter">
+              <option value="all" selected>Live + sim</option>
+              <option value="live">Live</option>
+              <option value="sim">Simulation</option>
+            </select>
+            <select id="tradeSort" aria-label="Trade sort">
+              <option value="newest" selected>Newest</option>
+              <option value="oldest">Oldest</option>
+              <option value="ticker_asc">Ticker A–Z</option>
+              <option value="ticker_desc">Ticker Z–A</option>
+              <option value="amount_desc">Amount</option>
+            </select>
+            <span class="hint" id="tradeRangeMeta"></span>
+          </div>
+          <div class="table-toolbar" id="tradeCustomRange" style="display:none">
+            <input type="datetime-local" id="tradeSince" aria-label="Trade range start" />
+            <span class="hint">–</span>
+            <input type="datetime-local" id="tradeUntil" aria-label="Trade range end" />
+            <button type="button" id="tradeCustomApply">Apply</button>
+          </div>
+          <ul class="feed" id="tradeFeed"></ul>
+          <p class="empty" id="tradeEmpty" style="display:none">No trades match this filter.</p>
+        </div>
+      </section>
+
+      <section class="section" aria-label="Robinhood positions">
         <div class="panel">
           <h3>Open positions</h3>
           <div class="table-toolbar">
@@ -539,7 +668,7 @@
           <div class="stat"><label>Total P&amp;L</label><div class="val" id="totalPnl">—</div></div>
           <div class="stat"><label>Unrealized</label><div class="val" id="unrealizedPnl">—</div></div>
           <div class="stat"><label>Realized</label><div class="val" id="realizedPnl">—</div></div>
-          <div class="stat"><label>Default trade</label><div class="val" id="defaultTrade">—</div></div>
+          <div class="stat"><label>Default buy %</label><div class="val" id="defaultTrade">—</div></div>
         </div>
         <div class="panel">
           <h3>Positions from bot trades (database)</h3>
@@ -568,43 +697,10 @@
         </div>
       </section>
 
-      <section class="section grid-2" aria-label="Activity">
-        <div class="panel">
-          <h3>Recent tweets</h3>
-          <div class="table-toolbar" id="tweetRangeToolbar">
-            <select id="tweetRange" aria-label="Tweet time range">
-              <option value="1d">1 Day</option>
-              <option value="1w" selected>1 Week</option>
-              <option value="1m">1 Month</option>
-              <option value="3m">3 Months</option>
-              <option value="ytd">YTD</option>
-              <option value="all">All</option>
-              <option value="custom">Custom…</option>
-            </select>
-            <select id="tweetSignalFilter" aria-label="Tweet signal filter">
-              <option value="all" selected>All signals</option>
-              <option value="alerts">Trade alerts</option>
-              <option value="buy">Buy</option>
-              <option value="sell">Sell</option>
-              <option value="ignore">Ignored</option>
-            </select>
-            <span class="hint" id="tweetRangeMeta"></span>
-          </div>
-          <div class="table-toolbar" id="tweetCustomRange" style="display:none">
-            <input type="datetime-local" id="tweetSince" aria-label="Tweet range start" />
-            <span class="hint">–</span>
-            <input type="datetime-local" id="tweetUntil" aria-label="Tweet range end" />
-            <button type="button" id="tweetCustomApply">Apply</button>
-          </div>
-          <ul class="feed" id="tweetFeed"></ul>
-          <p class="empty" id="tweetEmpty" style="display:none">No tweets match this filter.</p>
-        </div>
-        <div class="panel">
-          <h3>Recent trades</h3>
-          <ul class="feed" id="tradeFeed"></ul>
-          <p class="empty" id="tradeEmpty" style="display:none">No trades yet.</p>
-        </div>
-      </section>
+      <details class="panel tickers-panel" open>
+        <summary>Watchlist (<span id="watchlistCount">0</span>)</summary>
+        <div class="chips" id="watchlistChips"></div>
+      </details>
 
       <details class="panel tickers-panel" open>
         <summary>Recognized tickers (<span id="tickerCount">0</span>)</summary>
@@ -640,7 +736,20 @@
     let tweetCustomSince = null;
     let tweetCustomUntil = null;
     let tweetSignalFilter = "all";
+    let tweetTickerFilter = "";
+    let tweetTradedFilter = "all";
+    let tweetSort = "newest";
+    let tradeRangePreset = "1w";
+    let tradeCustomSince = null;
+    let tradeCustomUntil = null;
+    let tradeTickerFilter = "";
+    let tradeActionFilter = "all";
+    let tradeStatusFilter = "all";
+    let tradeModeFilter = "all";
+    let tradeSort = "newest";
     let activeManager = null;
+    let tweetTickerDebounce = null;
+    let tradeTickerDebounce = null;
 
     const MANAGER_LABELS = {
       individual: "Individual",
@@ -660,7 +769,45 @@
       alerts: "Trade alerts",
       buy: "Buy",
       sell: "Sell",
+      watch: "Watch",
       ignore: "Ignored",
+    };
+    const TWEET_TRADED_LABELS = {
+      all: "All tweets",
+      traded: "Traded",
+      not_traded: "Not traded",
+    };
+    const TWEET_SORT_LABELS = {
+      newest: "Newest",
+      oldest: "Oldest",
+      ticker_asc: "Ticker A–Z",
+      ticker_desc: "Ticker Z–A",
+      confidence_desc: "Confidence",
+    };
+    const TRADE_ACTION_LABELS = {
+      all: "All actions",
+      buy: "Buy",
+      sell: "Sell",
+    };
+    const TRADE_STATUS_LABELS = {
+      all: "All statuses",
+      filled: "Filled",
+      submitted: "Submitted",
+      simulated: "Simulated",
+      rejected: "Rejected",
+      failed: "Failed",
+    };
+    const TRADE_MODE_LABELS = {
+      all: "Live + sim",
+      live: "Live",
+      sim: "Simulation",
+    };
+    const TRADE_SORT_LABELS = {
+      newest: "Newest",
+      oldest: "Oldest",
+      ticker_asc: "Ticker A–Z",
+      ticker_desc: "Ticker Z–A",
+      amount_desc: "Amount",
     };
     const managerQuery = () => {
       const manager = activeManager || "individual";
@@ -762,10 +909,13 @@
       const since = new Date(until.getTime() - 7 * 24 * 60 * 60 * 1000);
       return { since: since.toISOString(), until: until.toISOString() };
     };
-    const saveTweetRangeState = () => {
+    const saveTweetFilterState = () => {
       try {
         localStorage.setItem("tweetRangePreset", tweetRangePreset);
         localStorage.setItem("tweetSignalFilter", tweetSignalFilter);
+        localStorage.setItem("tweetTickerFilter", tweetTickerFilter);
+        localStorage.setItem("tweetTradedFilter", tweetTradedFilter);
+        localStorage.setItem("tweetSort", tweetSort);
         if (tweetRangePreset === "custom") {
           localStorage.setItem("tweetSince", tweetCustomSince || "");
           localStorage.setItem("tweetUntil", tweetCustomUntil || "");
@@ -774,12 +924,17 @@
         /* ignore storage errors */
       }
     };
-    const loadTweetRangeState = () => {
+    const loadTweetFilterState = () => {
       try {
         const preset = localStorage.getItem("tweetRangePreset");
         if (preset) tweetRangePreset = preset;
         const signal = localStorage.getItem("tweetSignalFilter");
         if (signal) tweetSignalFilter = signal;
+        tweetTickerFilter = localStorage.getItem("tweetTickerFilter") || "";
+        const traded = localStorage.getItem("tweetTradedFilter");
+        if (traded) tweetTradedFilter = traded;
+        const sort = localStorage.getItem("tweetSort");
+        if (sort) tweetSort = sort;
         tweetCustomSince = localStorage.getItem("tweetSince") || null;
         tweetCustomUntil = localStorage.getItem("tweetUntil") || null;
       } catch {
@@ -789,6 +944,12 @@
       if (select) select.value = tweetRangePreset;
       const signalSelect = document.getElementById("tweetSignalFilter");
       if (signalSelect) signalSelect.value = tweetSignalFilter;
+      const tickerInput = document.getElementById("tweetTickerFilter");
+      if (tickerInput) tickerInput.value = tweetTickerFilter;
+      const tradedSelect = document.getElementById("tweetTradedFilter");
+      if (tradedSelect) tradedSelect.value = tweetTradedFilter;
+      const sortSelect = document.getElementById("tweetSort");
+      if (sortSelect) sortSelect.value = tweetSort;
       updateTweetCustomPanel();
     };
     const updateTweetCustomPanel = () => {
@@ -805,18 +966,30 @@
       document.getElementById("tweetUntil").value = isoToLocalDatetime(tweetCustomUntil);
     };
     const buildTweetFetchUrl = () => {
-      const signal = encodeURIComponent(tweetSignalFilter);
+      const params = new URLSearchParams();
+      params.set("signal", tweetSignalFilter);
+      params.set("traded", tweetTradedFilter);
+      params.set("sort", tweetSort);
+      if (tweetTickerFilter.trim()) params.set("ticker", tweetTickerFilter.trim());
       if (tweetRangePreset === "custom") {
-        const since = encodeURIComponent(tweetCustomSince || "");
-        const until = encodeURIComponent(tweetCustomUntil || "");
-        return `/dashboard/tweets?since=${since}&until=${until}&signal=${signal}`;
+        params.set("since", tweetCustomSince || "");
+        params.set("until", tweetCustomUntil || "");
+      } else {
+        params.set("range", tweetRangePreset);
       }
-      return `/dashboard/tweets?range=${encodeURIComponent(tweetRangePreset)}&signal=${signal}`;
+      return `/dashboard/tweets?${params.toString()}`;
     };
     const describeTweetFilters = () => {
       const parts = [describeTweetRange()];
       if (tweetSignalFilter !== "all") {
         parts.push(TWEET_SIGNAL_LABELS[tweetSignalFilter] || tweetSignalFilter);
+      }
+      if (tweetTickerFilter.trim()) parts.push(tweetTickerFilter.trim().toUpperCase());
+      if (tweetTradedFilter !== "all") {
+        parts.push(TWEET_TRADED_LABELS[tweetTradedFilter] || tweetTradedFilter);
+      }
+      if (tweetSort !== "newest") {
+        parts.push(TWEET_SORT_LABELS[tweetSort] || tweetSort);
       }
       return parts.join(" · ");
     };
@@ -826,6 +999,112 @@
       }
       return TWEET_RANGE_LABELS[tweetRangePreset] || tweetRangePreset;
     };
+    const saveTradeFilterState = () => {
+      try {
+        localStorage.setItem("tradeRangePreset", tradeRangePreset);
+        localStorage.setItem("tradeTickerFilter", tradeTickerFilter);
+        localStorage.setItem("tradeActionFilter", tradeActionFilter);
+        localStorage.setItem("tradeStatusFilter", tradeStatusFilter);
+        localStorage.setItem("tradeModeFilter", tradeModeFilter);
+        localStorage.setItem("tradeSort", tradeSort);
+        if (tradeRangePreset === "custom") {
+          localStorage.setItem("tradeSince", tradeCustomSince || "");
+          localStorage.setItem("tradeUntil", tradeCustomUntil || "");
+        }
+      } catch {
+        /* ignore storage errors */
+      }
+    };
+    const loadTradeFilterState = () => {
+      try {
+        const preset = localStorage.getItem("tradeRangePreset");
+        if (preset) tradeRangePreset = preset;
+        tradeTickerFilter = localStorage.getItem("tradeTickerFilter") || "";
+        const action = localStorage.getItem("tradeActionFilter");
+        if (action) tradeActionFilter = action;
+        const status = localStorage.getItem("tradeStatusFilter");
+        if (status) tradeStatusFilter = status;
+        const mode = localStorage.getItem("tradeModeFilter");
+        if (mode) tradeModeFilter = mode;
+        const sort = localStorage.getItem("tradeSort");
+        if (sort) tradeSort = sort;
+        tradeCustomSince = localStorage.getItem("tradeSince") || null;
+        tradeCustomUntil = localStorage.getItem("tradeUntil") || null;
+      } catch {
+        /* ignore storage errors */
+      }
+      const select = document.getElementById("tradeRange");
+      if (select) select.value = tradeRangePreset;
+      const tickerInput = document.getElementById("tradeTickerFilter");
+      if (tickerInput) tickerInput.value = tradeTickerFilter;
+      const actionSelect = document.getElementById("tradeActionFilter");
+      if (actionSelect) actionSelect.value = tradeActionFilter;
+      const statusSelect = document.getElementById("tradeStatusFilter");
+      if (statusSelect) statusSelect.value = tradeStatusFilter;
+      const modeSelect = document.getElementById("tradeModeFilter");
+      if (modeSelect) modeSelect.value = tradeModeFilter;
+      const sortSelect = document.getElementById("tradeSort");
+      if (sortSelect) sortSelect.value = tradeSort;
+      updateTradeCustomPanel();
+    };
+    const updateTradeCustomPanel = () => {
+      const customPanel = document.getElementById("tradeCustomRange");
+      const isCustom = tradeRangePreset === "custom";
+      customPanel.style.display = isCustom ? "flex" : "none";
+      if (!isCustom) return;
+      if (!tradeCustomSince || !tradeCustomUntil) {
+        const defaults = defaultCustomTweetRange();
+        tradeCustomSince = defaults.since;
+        tradeCustomUntil = defaults.until;
+      }
+      document.getElementById("tradeSince").value = isoToLocalDatetime(tradeCustomSince);
+      document.getElementById("tradeUntil").value = isoToLocalDatetime(tradeCustomUntil);
+    };
+    const buildTradeFetchUrl = () => {
+      const params = new URLSearchParams();
+      params.set("action", tradeActionFilter);
+      params.set("status", tradeStatusFilter);
+      params.set("mode", tradeModeFilter);
+      params.set("sort", tradeSort);
+      if (tradeTickerFilter.trim()) params.set("ticker", tradeTickerFilter.trim());
+      if (tradeRangePreset === "custom") {
+        params.set("since", tradeCustomSince || "");
+        params.set("until", tradeCustomUntil || "");
+      } else {
+        params.set("range", tradeRangePreset);
+      }
+      return `/dashboard/trades?${params.toString()}&${managerQuery()}`;
+    };
+    const describeTradeFilters = () => {
+      const parts = [describeTradeRange()];
+      if (tradeTickerFilter.trim()) parts.push(tradeTickerFilter.trim().toUpperCase());
+      if (tradeActionFilter !== "all") {
+        parts.push(TRADE_ACTION_LABELS[tradeActionFilter] || tradeActionFilter);
+      }
+      if (tradeStatusFilter !== "all") {
+        parts.push(TRADE_STATUS_LABELS[tradeStatusFilter] || tradeStatusFilter);
+      }
+      if (tradeModeFilter !== "all") {
+        parts.push(TRADE_MODE_LABELS[tradeModeFilter] || tradeModeFilter);
+      }
+      if (tradeSort !== "newest") {
+        parts.push(TRADE_SORT_LABELS[tradeSort] || tradeSort);
+      }
+      return parts.join(" · ");
+    };
+    const describeTradeRange = () => {
+      if (tradeRangePreset === "custom") {
+        return `${fmtShortDate(tradeCustomSince)} – ${fmtShortDate(tradeCustomUntil)}`;
+      }
+      return TWEET_RANGE_LABELS[tradeRangePreset] || tradeRangePreset;
+    };
+    const showFeedError = (message) => {
+      const banner = document.getElementById("errorBanner");
+      banner.style.display = "block";
+      banner.textContent = message;
+    };
+    const reloadTweets = () => loadTweets().catch((err) => showFeedError(`Tweet fetch failed: ${err.message}`));
+    const reloadTrades = () => loadTrades().catch((err) => showFeedError(`Trade fetch failed: ${err.message}`));
     const tweetTimeTitle = (t) => {
       const posted = fmtTime(t.posted_at);
       if (!t.fetched_at || t.fetched_at === t.posted_at) return posted;
@@ -998,11 +1277,122 @@
 
     function signalBadge(action, ticker, rejection) {
       if (!action) return "";
-      const cls = action === "BUY" ? "buy" : action === "SELL" ? "sell" : "ignore";
+      const cls = action === "BUY" ? "buy" : action === "SELL" ? "sell" : action === "WATCH" ? "watch" : "ignore";
       const label = ticker ? `${action} ${ticker}` : action;
       let html = `<span class="badge ${cls}">${esc(label)}</span>`;
       if (rejection) html += `<span class="badge ignore" title="${esc(rejection)}">rejected</span>`;
       return html;
+    }
+
+    function convictionBadge(conviction) {
+      if (!conviction) return "";
+      return `<span class="badge ignore">${esc(conviction)}</span>`;
+    }
+
+    async function submitFeedback(tweetId, correctAction) {
+      const note = window.prompt("Optional note (training only; does not affect live orders):", "") || null;
+      const res = await fetch("/parser/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tweet_id: tweetId, correct_action: correctAction, note }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadTweets();
+    }
+
+    async function undoFeedback(tweetId) {
+      await fetch(`/parser/feedback/${encodeURIComponent(tweetId)}`, { method: "DELETE" });
+      await loadTweets();
+    }
+
+    async function loadReviewQueue() {
+      const res = await fetch("/dashboard/review-queue?limit=50");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const items = await res.json();
+      renderReviewQueue(items);
+      return items;
+    }
+
+    async function submitReviewLabel(signalId, action) {
+      const res = await fetch(`/dashboard/review-queue/${signalId}/label`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadReviewQueue();
+    }
+
+    function renderReviewQueue(items) {
+      const feed = document.getElementById("reviewQueueFeed");
+      const empty = document.getElementById("reviewQueueEmpty");
+      const meta = document.getElementById("reviewQueueMeta");
+      feed.innerHTML = "";
+      empty.style.display = items.length ? "none" : "block";
+      meta.textContent = items.length
+        ? `${items.length} pending`
+        : "clear";
+      for (const item of items) {
+        const li = document.createElement("li");
+        const snippet = (item.tweet_text || "").replace(/\s+/g, " ").trim();
+        const short = snippet.length > 160 ? `${snippet.slice(0, 157)}…` : snippet;
+        const conf = item.confidence != null ? Number(item.confidence).toFixed(2) : "—";
+        li.innerHTML = `
+          <div class="meta">
+            ${signalBadge(item.action, item.ticker)}
+            <span class="badge ignore">conf ${esc(conf)}</span>
+            ${item.review_reason ? `<span class="badge watch">${esc(item.review_reason)}</span>` : ""}
+          </div>
+          <div class="tweet-text">${esc(short)}</div>
+          <div class="meta review-actions" data-signal-id="${item.signal_id}">
+            <button type="button" data-action="BUY">Confirm BUY</button>
+            <button type="button" data-action="SELL">Confirm SELL</button>
+          </div>`;
+        feed.appendChild(li);
+      }
+      feed.querySelectorAll(".review-actions button[data-action]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const signalId = btn.closest(".review-actions").dataset.signalId;
+          try {
+            await submitReviewLabel(signalId, btn.dataset.action);
+          } catch (err) {
+            document.getElementById("errorBanner").style.display = "block";
+            document.getElementById("errorBanner").textContent = String(err.message || err);
+          }
+        });
+      });
+    }
+
+    function renderDigest(digest) {
+      const body = document.getElementById("digestBody");
+      const empty = document.getElementById("digestEmpty");
+      const status = document.getElementById("digestStatus");
+      if (!digest) {
+        body.textContent = "";
+        empty.style.display = "block";
+        status.textContent = "—";
+        return;
+      }
+      empty.style.display = "none";
+      status.textContent = `${digest.status} · ${digest.current_period} · alerts ${digest.stats?.alert_count ?? digest.stats?.tweet_count ?? 0} · trades ${digest.stats?.trade_count ?? 0}`;
+      body.textContent = digest.summary_markdown || "";
+    }
+
+    function renderWatchlist(entries = []) {
+      const el = document.getElementById("watchlistChips");
+      document.getElementById("watchlistCount").textContent = String(entries.length);
+      el.innerHTML = "";
+      if (!entries.length) {
+        el.innerHTML = `<span class="empty">None yet</span>`;
+        return;
+      }
+      for (const row of entries) {
+        const span = document.createElement("span");
+        span.className = "chip";
+        span.title = `${row.watch_conviction} · score ${row.conviction_score.toFixed(1)}`;
+        span.textContent = `${row.ticker} (${row.conviction_score.toFixed(1)})`;
+        el.appendChild(span);
+      }
     }
 
     function renderTickerChips(filter = "") {
@@ -1058,6 +1448,14 @@
       return tweets;
     }
 
+    async function loadTrades() {
+      const res = await fetch(buildTradeFetchUrl());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const trades = await res.json();
+      renderTrades(trades);
+      return trades;
+    }
+
     async function loadActivity() {
       const liveOnly = document.getElementById("liveOnly").checked;
       const res = await fetch(
@@ -1070,7 +1468,7 @@
       applyRefreshIntervals(data.health);
       syncActiveManagerFromData(data);
       renderActivity(dashboardState);
-      await loadTweets();
+      await Promise.all([loadTweets(), loadTrades(), loadReviewQueue()]);
       activityCountdown = Math.round(ACTIVITY_MS / 1000);
       return data;
     }
@@ -1116,7 +1514,7 @@
 
       renderManagerSelect(data.managers || h.managers || []);
 
-      document.getElementById("defaultTrade").textContent = fmtUsd(h.default_trade_size_usd);
+      document.getElementById("defaultTrade").textContent = `${h.default_buy_allocation_pct}%`;
 
       const pills = document.getElementById("statusPills");
       pills.innerHTML = "";
@@ -1132,6 +1530,34 @@
       addPill(h.live_trading_enabled ? "Live" : "Simulation", h.live_trading_enabled ? "ok" : "info");
       addPill(h.order_execution_mode.replace(/_/g, " "), "info");
       if (h.trading_window_enabled) addPill("Trading window on", "info");
+      if (h.robinhood_auth_status) {
+        const rem = h.robinhood_auth_days_remaining;
+        let authText = "RH auth";
+        let authCls = "info";
+        if (h.robinhood_auth_status === "ok" && rem != null) {
+          authText = `RH auth · ${Number(rem).toFixed(1)}d left`;
+          authCls = "ok";
+        } else if (h.robinhood_auth_status === "warn") {
+          authText = rem != null ? `RH auth · refresh soon (${Number(rem).toFixed(1)}d)` : "RH auth · refresh soon";
+          authCls = "warn";
+        } else if (h.robinhood_auth_status === "critical") {
+          authText = "RH auth · overdue";
+          authCls = "bad";
+        } else if (h.robinhood_auth_status === "missing") {
+          authText = "RH auth · missing";
+          authCls = "bad";
+        } else {
+          authText = "RH auth · unknown";
+          authCls = "warn";
+        }
+        const authPill = document.createElement("span");
+        authPill.className = `pill ${authCls}`;
+        authPill.textContent = authText;
+        if (h.robinhood_auth_refresh_due_at) {
+          authPill.title = `Refresh due ${fmtTime(h.robinhood_auth_refresh_due_at)}`;
+        }
+        pills.appendChild(authPill);
+      }
 
       const workerBanner = document.getElementById("workerBanner");
       if (data.worker_last_error) {
@@ -1144,7 +1570,8 @@
       document.getElementById("pauseBtn").disabled = h.worker_paused || !h.worker_running;
       document.getElementById("resumeBtn").disabled = !h.worker_paused;
 
-      renderTrades(data);
+      renderWatchlist(data.watchlist || []);
+      renderDigest(data.daily_digest || null);
       allTickers = data.recognized_tickers || [];
       document.getElementById("tickerCount").textContent = String(allTickers.length);
       renderTickerChips(document.getElementById("tickerFilter").value);
@@ -1203,24 +1630,61 @@
       for (const t of tweets) {
         const li = document.createElement("li");
         const sig = signalBadge(t.signal_action, t.signal_ticker, t.signal_rejection_reason);
+        const conviction = convictionBadge(t.buy_conviction);
+        const traded = t.traded
+          ? `<span class="badge filled" title="${esc(t.trade_status || "")}">traded ${t.trade_amount_usd != null ? fmtUsd(t.trade_amount_usd) : ""}</span>`
+          : "";
         const link = t.url
           ? `<a href="${esc(t.url)}" target="_blank" rel="noopener">Open on X</a>`
           : "";
+        let feedbackHtml = "";
+        if (t.feedback_correct_action) {
+          feedbackHtml = `<div class="meta"><span class="badge watch">Labeled: should be ${esc(t.feedback_correct_action)}</span>
+            <button type="button" class="feedback-undo" data-tweet-id="${esc(t.tweet_id)}">Undo</button></div>`;
+        } else {
+          feedbackHtml = `<div class="meta feedback-actions" data-tweet-id="${esc(t.tweet_id)}">
+            <button type="button" data-action="BUY">Wrong: BUY</button>
+            <button type="button" data-action="SELL">Wrong: SELL</button>
+            <button type="button" data-action="IGNORE">Wrong: IGNORE</button>
+          </div>`;
+        }
         li.innerHTML = `
-          <div class="meta">${sig}
+          <div class="meta">${sig}${conviction}${traded}
             <span class="time" title="${esc(tweetTimeTitle(t))}">${fmtRelative(t.posted_at)}</span>
             ${link}
           </div>
-          <div class="body">${esc(t.text)}</div>`;
+          <div class="body">${esc(t.text)}</div>
+          ${feedbackHtml}`;
         tweetFeed.appendChild(li);
       }
+      tweetFeed.querySelectorAll(".feedback-actions button").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const tweetId = btn.parentElement.dataset.tweetId;
+          try {
+            btn.disabled = true;
+            await submitFeedback(tweetId, btn.dataset.action);
+          } catch (err) {
+            alert(`Feedback failed: ${err.message}`);
+            btn.disabled = false;
+          }
+        });
+      });
+      tweetFeed.querySelectorAll(".feedback-undo").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          await undoFeedback(btn.dataset.tweetId);
+        });
+      });
     }
 
-    function renderTrades(data) {
+    function renderTrades(trades) {
       const tradeFeed = document.getElementById("tradeFeed");
       tradeFeed.innerHTML = "";
-      document.getElementById("tradeEmpty").style.display = data.recent_trades.length ? "none" : "block";
-      for (const tr of data.recent_trades) {
+      document.getElementById("tradeEmpty").style.display = trades.length ? "none" : "block";
+      document.getElementById("tradeRangeMeta").textContent =
+        trades.length
+          ? `${trades.length} trade${trades.length === 1 ? "" : "s"} · ${describeTradeFilters()}`
+          : describeTradeFilters();
+      for (const tr of trades) {
         const li = document.createElement("li");
         const sim = tr.simulation ? '<span class="badge sim">sim</span>' : '<span class="badge live">live</span>';
         const action = tr.action === "BUY"
@@ -1254,26 +1718,90 @@
       }
     }
 
+    let reauthInFlight = false;
+    function setReauthBanner(text, cls) {
+      const el = document.getElementById("reauthBanner");
+      if (!text) {
+        el.style.display = "none";
+        el.textContent = "";
+        el.className = "";
+        return;
+      }
+      el.style.display = "block";
+      el.className = cls || "info";
+      el.textContent = text;
+    }
+
+    async function pollReauthStatus() {
+      const res = await fetch("/robinhood/reauth/status");
+      if (!res.ok) throw new Error(`reauth status ${res.status}`);
+      return res.json();
+    }
+
+    async function startRhReauth() {
+      if (reauthInFlight) return;
+      reauthInFlight = true;
+      const btn = document.getElementById("reauthBtn");
+      btn.disabled = true;
+      setReauthBanner("Approve on your Robinhood app now…", "info");
+      try {
+        const start = await fetch("/robinhood/reauth", { method: "POST" });
+        if (!start.ok) {
+          const detail = await start.text();
+          throw new Error(detail || `reauth ${start.status}`);
+        }
+        const deadline = Date.now() + 200000;
+        while (Date.now() < deadline) {
+          const job = await pollReauthStatus();
+          if (job.status === "awaiting_approval") {
+            setReauthBanner(job.message || "Approve on your Robinhood app now…", "info");
+          } else if (job.status === "succeeded") {
+            setReauthBanner(job.message || "Robinhood auth refreshed.", "ok");
+            await load();
+            return;
+          } else if (job.status === "failed") {
+            setReauthBanner(job.message || job.error || "Reauth failed", "bad");
+            return;
+          } else if (job.status === "idle") {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+        setReauthBanner("Timed out waiting for approval. Try again.", "bad");
+      } catch (err) {
+        setReauthBanner(String(err.message || err), "bad");
+      } finally {
+        reauthInFlight = false;
+        btn.disabled = false;
+      }
+    }
+
     document.getElementById("tweetRange").addEventListener("change", (e) => {
       tweetRangePreset = e.target.value;
-      saveTweetRangeState();
+      saveTweetFilterState();
       updateTweetCustomPanel();
-      if (tweetRangePreset !== "custom") {
-        loadTweets().catch((err) => {
-          const banner = document.getElementById("errorBanner");
-          banner.style.display = "block";
-          banner.textContent = `Tweet fetch failed: ${err.message}`;
-        });
-      }
+      if (tweetRangePreset !== "custom") reloadTweets();
     });
     document.getElementById("tweetSignalFilter").addEventListener("change", (e) => {
       tweetSignalFilter = e.target.value;
-      saveTweetRangeState();
-      loadTweets().catch((err) => {
-        const banner = document.getElementById("errorBanner");
-        banner.style.display = "block";
-        banner.textContent = `Tweet fetch failed: ${err.message}`;
-      });
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetTradedFilter").addEventListener("change", (e) => {
+      tweetTradedFilter = e.target.value;
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetSort").addEventListener("change", (e) => {
+      tweetSort = e.target.value;
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tweetTickerFilter").addEventListener("input", (e) => {
+      tweetTickerFilter = e.target.value;
+      saveTweetFilterState();
+      clearTimeout(tweetTickerDebounce);
+      tweetTickerDebounce = setTimeout(reloadTweets, 250);
     });
     document.getElementById("tweetCustomApply").addEventListener("click", () => {
       const sinceIso = localDatetimeToIso(document.getElementById("tweetSince").value);
@@ -1288,12 +1816,56 @@
       }
       tweetCustomSince = sinceIso;
       tweetCustomUntil = untilIso;
-      saveTweetRangeState();
-      loadTweets().catch((err) => {
-        const banner = document.getElementById("errorBanner");
-        banner.style.display = "block";
-        banner.textContent = `Tweet fetch failed: ${err.message}`;
-      });
+      saveTweetFilterState();
+      reloadTweets();
+    });
+    document.getElementById("tradeRange").addEventListener("change", (e) => {
+      tradeRangePreset = e.target.value;
+      saveTradeFilterState();
+      updateTradeCustomPanel();
+      if (tradeRangePreset !== "custom") reloadTrades();
+    });
+    document.getElementById("tradeActionFilter").addEventListener("change", (e) => {
+      tradeActionFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeStatusFilter").addEventListener("change", (e) => {
+      tradeStatusFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeModeFilter").addEventListener("change", (e) => {
+      tradeModeFilter = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeSort").addEventListener("change", (e) => {
+      tradeSort = e.target.value;
+      saveTradeFilterState();
+      reloadTrades();
+    });
+    document.getElementById("tradeTickerFilter").addEventListener("input", (e) => {
+      tradeTickerFilter = e.target.value;
+      saveTradeFilterState();
+      clearTimeout(tradeTickerDebounce);
+      tradeTickerDebounce = setTimeout(reloadTrades, 250);
+    });
+    document.getElementById("tradeCustomApply").addEventListener("click", () => {
+      const sinceIso = localDatetimeToIso(document.getElementById("tradeSince").value);
+      const untilIso = localDatetimeToIso(document.getElementById("tradeUntil").value);
+      if (!sinceIso || !untilIso) {
+        alert("Enter both start and end date/time.");
+        return;
+      }
+      if (new Date(sinceIso) >= new Date(untilIso)) {
+        alert("Start must be before end.");
+        return;
+      }
+      tradeCustomSince = sinceIso;
+      tradeCustomUntil = untilIso;
+      saveTradeFilterState();
+      reloadTrades();
     });
     document.getElementById("managerSelect").addEventListener("change", (e) => {
       activeManager = e.target.value;
@@ -1322,6 +1894,7 @@
     });
     document.getElementById("pauseBtn").addEventListener("click", () => postControl("/pause"));
     document.getElementById("resumeBtn").addEventListener("click", () => postControl("/resume"));
+    document.getElementById("reauthBtn").addEventListener("click", () => startRhReauth());
     document.getElementById("tickerFilter").addEventListener("input", (e) => {
       renderTickerChips(e.target.value);
     });
@@ -1334,7 +1907,8 @@
 
     initBalanceChart();
     loadActiveManagerState();
-    loadTweetRangeState();
+    loadTweetFilterState();
+    loadTradeFilterState();
     load();
     startCountdown();
   </script>

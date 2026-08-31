@@ -37,38 +37,52 @@ class Settings(BaseSettings):
     backfill_max_scrolls: int = 150
     backfill_scroll_pause_ms: int = 1500
 
-    allowed_tickers: Annotated[list[str], NoDecode] = Field(
+    # Parser-only hints for bare ticker mentions; never used as a trading allowlist.
+    known_tickers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            "AAPL",
-            "MSFT",
-            "NVDA",
-            "TSLA",
-            "META",
-            "AMZN",
-            "GOOGL",
-            "AMD",
-            "QQQ",
-            "SPY",
+            "ASTS",
+            "EOS.AX",
+            "NBIS",
+            "DRAM",
+            "VIVO",
+            "PENG",
+            "DGXX",
+            "DYOR",
+            "NFA",
+            "AMBA",
+            "VPG",
+            "ADTN",
+            "HLIT",
+            "AAOI",
+            "ADEA",
         ]
     )
-    default_trade_size_usd: float = 1.0
-    max_trade_size_usd: float = 5.0
-    new_ticker_size_multiplier: float = 10.0
-    thesis_trade_min_usd: float = 500.0
-    thesis_trade_max_usd: float = 1000.0
-    cash_buffer_usd: float = 0.0
-    min_buy_notional_usd: float = 1.0
+
+    # Portfolio-relative sizing (% of CK sleeve). Explicit tweet allocations override defaults.
+    default_buy_allocation_pct: float = 1.0
+    standard_buy_allocation_pct_max: float = 2.0
+    reload_buy_allocation_pct_max: float = 5.0
+    thesis_buy_allocation_pct_min: float = 3.0
+    thesis_buy_allocation_pct_max: float = 7.0
+    min_trade_notional_pct: float = 0.01
+    min_trade_notional_usd: float = 1.0
+    cash_buffer_pct: float = 2.0
+    max_sell_notional_pct: float = 25.0
+    # CKCapital sleeve notional used for % buy/sell sizing (not full RH equity).
+    ck_portfolio_usd: float | None = None
+    # Deprecated: used only when CK_PORTFOLIO_USD is unset.
+    simulation_portfolio_usd: float | None = None
     cooldown_seconds: int = 300
     duplicate_window_seconds: int = 300
 
     signal_parser_backend: Literal["keywords", "hybrid"] = "hybrid"
-    signal_ml_min_confidence: float = 0.42
-    signal_ml_min_margin: float = 0.08
-    # 0 = disabled. When > 0, BUY for tickers outside ALLOWED_TICKERS / recognized_tickers
-    # requires parser confidence at least this high (keyword + hybrid signals set confidence).
-    min_buy_confidence_unlisted: float = 0.0
+    signal_ml_min_confidence: float = 0.35
+    signal_ml_min_margin: float = 0.06
+    signal_trade_header_review_confidence: float = 0.5
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
+    watchlist_stale_days: int = 30
+    watchlist_max_conviction_score: float = 5.0
 
     chart_ytd_baseline_usd: float = 5000.0
 
@@ -89,6 +103,9 @@ class Settings(BaseSettings):
     robinhood_login_retry_seconds: int = 300
     robinhood_login_429_backoff_seconds: int = 900
     robinhood_session_validate_seconds: int = 120
+    robinhood_pickle_max_age_days: float = 6.0
+    robinhood_pickle_warn_days: float = 1.0
+    robinhood_reauth_timeout_seconds: int = 180
 
     log_level: str = "INFO"
     log_file: str = "logs/bot.log"
@@ -98,18 +115,60 @@ class Settings(BaseSettings):
     pnl_include_simulation: bool = True
     pnl_quote_cache_seconds: int = 60
 
-    @field_validator("allowed_tickers", mode="before")
+    alert_webhook_url: str | None = None
+    alert_enabled: bool = True
+    alert_on_live_trades: bool = True
+    alert_on_rejected_signals: bool = False
+    alert_rejected_reasons: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "insufficient_cash",
+            "not_in_portfolio",
+            "insufficient_cash_data",
+        ]
+    )
+    alert_on_worker_errors: bool = True
+    alert_cooldown_seconds: int = 60
+
+    snapshot_enabled: bool = True
+    snapshot_interval_seconds: int = 300
+
+    daily_digest_enabled: bool = True
+    daily_digest_live_update: bool = True
+    daily_digest_send_webhook: bool = True
+    daily_digest_webhook_on_checkpoints: bool = False
+    daily_digest_rebuild_interval_seconds: int = 300
+
+    @field_validator("known_tickers", mode="before")
     @classmethod
-    def parse_allowed_tickers(cls, value: object) -> list[str]:
+    def parse_known_tickers(cls, value: object) -> list[str]:
         if isinstance(value, str):
             return [ticker.strip().upper() for ticker in value.split(",") if ticker.strip()]
         if isinstance(value, list):
-            return [str(ticker).upper() for ticker in value]
-        raise ValueError("ALLOWED_TICKERS must be a comma-separated string or list")
+            return [str(ticker).strip().upper() for ticker in value if str(ticker).strip()]
+        raise ValueError("KNOWN_TICKERS must be a comma-separated string or list")
 
     @field_validator("playwright_cdp_url", mode="before")
     @classmethod
     def normalize_playwright_cdp_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @field_validator("alert_rejected_reasons", mode="before")
+    @classmethod
+    def parse_alert_rejected_reasons(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        if isinstance(value, list):
+            return [str(part).strip() for part in value if str(part).strip()]
+        raise ValueError("ALERT_REJECTED_REASONS must be a comma-separated string or list")
+
+    @field_validator("alert_webhook_url", mode="before")
+    @classmethod
+    def normalize_alert_webhook_url(cls, value: object) -> str | None:
         if value is None:
             return None
         text = str(value).strip()
@@ -124,17 +183,19 @@ class Settings(BaseSettings):
             return 3600
         return value
 
-    @field_validator("max_trade_size_usd")
-    @classmethod
-    def validate_max_trade_size(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("MAX_TRADE_SIZE_USD must be > 0")
-        return value
-
     @property
     def live_trading_enabled(self) -> bool:
         """Live trading is only enabled with explicit flag and simulation off."""
         return self.enable_live_trading and not self.simulation_mode
+
+    @property
+    def resolved_ck_portfolio_usd(self) -> float:
+        """CK sleeve % base; falls back to legacy SIMULATION_PORTFOLIO_USD if needed."""
+        if self.ck_portfolio_usd and self.ck_portfolio_usd > 0:
+            return float(self.ck_portfolio_usd)
+        if self.simulation_portfolio_usd is not None and self.simulation_portfolio_usd > 0:
+            return float(self.simulation_portfolio_usd)
+        return 10_000.0
 
 
 @lru_cache(maxsize=1)

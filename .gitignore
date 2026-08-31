@@ -8,14 +8,20 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.runner.example
 
 # Local runtime data
+.local/
 trading_bot.db
 trading_bot.db-*
 logs/
 .playwright/
 data/*
 !data/.gitkeep
+!data/labeled_signals.jsonl
+!data/models/
+!data/models/.gitkeep
+!data/models/*.joblib
 
 # OS / editor
 .DS_Store

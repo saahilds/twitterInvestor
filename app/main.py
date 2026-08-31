@@ -19,7 +19,10 @@ from app.parsing.factory import build_signal_parser
 from app.risk.risk_manager import RiskConfig, RiskManager
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 from app.services.account_manager import AccountManager
+from app.services.alerts import AlertService
 from app.services.audit import ExecutionAuditLogger
+from app.services.daily_digest import DailyDigestService
+from app.services.watchlist import WatchlistRegistry
 from app.portfolio.quotes import QuoteProvider
 from app.services.pnl_service import PnlService
 from app.services.trade_status import TradeStatusSync
@@ -30,6 +33,18 @@ logger = build_logger(settings)
 
 init_db()
 
+alert_service = AlertService(
+    webhook_url=settings.alert_webhook_url,
+    enabled=settings.alert_enabled,
+    on_live_trades=settings.alert_on_live_trades,
+    on_rejected_signals=settings.alert_on_rejected_signals,
+    rejected_reasons=settings.alert_rejected_reasons,
+    on_worker_errors=settings.alert_on_worker_errors,
+    cooldown_seconds=settings.alert_cooldown_seconds,
+    logger=logger,
+)
+digest_service = DailyDigestService(SessionLocal)
+
 twitter_client = build_twitter_client(settings, logger)
 ingestion_service = build_ingestion_service(
     settings=settings,
@@ -37,19 +52,23 @@ ingestion_service = build_ingestion_service(
     session_factory=SessionLocal,
     logger=logger,
 )
+if hasattr(ingestion_service, "alert_service"):
+    ingestion_service.alert_service = alert_service
 
 parser = build_signal_parser(settings)
 audit_logger = ExecutionAuditLogger(session_factory=SessionLocal, logger=logger)
 
 risk_config = RiskConfig(
-    seed_tickers=set(settings.allowed_tickers),
-    max_trade_size_usd=settings.max_trade_size_usd,
-    default_trade_size_usd=settings.default_trade_size_usd,
-    new_ticker_size_multiplier=settings.new_ticker_size_multiplier,
-    thesis_trade_min_usd=settings.thesis_trade_min_usd,
-    thesis_trade_max_usd=settings.thesis_trade_max_usd,
-    cash_buffer_usd=settings.cash_buffer_usd,
-    min_buy_notional_usd=settings.min_buy_notional_usd,
+    default_buy_allocation_pct=settings.default_buy_allocation_pct,
+    standard_buy_allocation_pct_max=settings.standard_buy_allocation_pct_max,
+    reload_buy_allocation_pct_max=settings.reload_buy_allocation_pct_max,
+    thesis_buy_allocation_pct_min=settings.thesis_buy_allocation_pct_min,
+    thesis_buy_allocation_pct_max=settings.thesis_buy_allocation_pct_max,
+    min_trade_notional_pct=settings.min_trade_notional_pct,
+    min_trade_notional_usd=settings.min_trade_notional_usd,
+    cash_buffer_pct=settings.cash_buffer_pct,
+    max_sell_notional_pct=settings.max_sell_notional_pct,
+    ck_portfolio_usd=settings.resolved_ck_portfolio_usd,
     cooldown_seconds=settings.cooldown_seconds,
     duplicate_window_seconds=settings.duplicate_window_seconds,
     trading_window_enabled=settings.trading_window_enabled,
@@ -57,8 +76,14 @@ risk_config = RiskConfig(
     max_trades_per_ticker_per_day=settings.max_trades_per_ticker_per_day,
     daily_limit_counts_simulation=settings.daily_limit_counts_simulation,
     live_trading_enabled=settings.live_trading_enabled,
-    min_buy_confidence_unlisted=settings.min_buy_confidence_unlisted,
     min_sell_notional_usd=settings.min_sell_notional_usd,
+    watchlist_stale_days=settings.watchlist_stale_days,
+    watchlist_max_conviction_score=settings.watchlist_max_conviction_score,
+)
+
+watchlist_registry = WatchlistRegistry(
+    max_conviction_score=settings.watchlist_max_conviction_score,
+    stale_days=settings.watchlist_stale_days,
 )
 
 manager_configs = parse_bot_managers(settings)
@@ -76,14 +101,15 @@ if settings.broker_backend == "mock":
                 config=cfg,
                 settings=settings,
                 broker=broker,
-                risk_manager=RiskManager(risk_config),
+                risk_manager=RiskManager(risk_config, watchlist=watchlist_registry),
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=None,
+                alert_service=alert_service,
             )
         )
 else:
-    rh_session = RobinhoodSessionManager(settings=settings, logger=logger)
+    rh_session = RobinhoodSessionManager(settings=settings, logger=logger, alert_service=alert_service)
     for cfg in manager_configs:
         broker = RobinhoodBroker(
             settings=settings,
@@ -99,10 +125,11 @@ else:
                 config=cfg,
                 settings=settings,
                 broker=broker,
-                risk_manager=RiskManager(risk_config),
+                risk_manager=RiskManager(risk_config, watchlist=watchlist_registry),
                 session_factory=SessionLocal,
                 logger=logger,
                 trade_status_sync=trade_status,
+                alert_service=alert_service,
             )
         )
 
@@ -126,6 +153,8 @@ orchestrator = BotOrchestrator(
     session_factory=SessionLocal,
     audit_logger=audit_logger,
     logger=logger,
+    alert_service=alert_service,
+    digest_service=digest_service,
 )
 
 
@@ -173,5 +202,6 @@ app.include_router(
         pnl_service=pnl_service,
         brokers_by_manager=brokers_by_manager,
         rh_session=rh_session,
+        digest_service=digest_service,
     )
 )

@@ -3,24 +3,14 @@ from datetime import datetime, timezone
 from app.execution.holdings import BrokerHolding
 from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import TradeSignal
-from app.risk.risk_manager import RiskConfig, RiskManager
+from app.risk.risk_manager import RiskManager
+
+
+from app.testing.risk_config import make_risk_config
 
 
 def _manager(**overrides) -> RiskManager:
-    defaults = {
-        "seed_tickers": {"NVDA", "AAPL"},
-        "max_trade_size_usd": 5,
-        "default_trade_size_usd": 1,
-        "new_ticker_size_multiplier": 10,
-        "cooldown_seconds": 300,
-        "duplicate_window_seconds": 300,
-        "trading_window_enabled": False,
-        "us_symbols_only": True,
-        "max_trades_per_ticker_per_day": 1,
-        "daily_limit_counts_simulation": True,
-    }
-    defaults.update(overrides)
-    return RiskManager(RiskConfig(**defaults))
+    return RiskManager(make_risk_config(**overrides))
 
 
 def test_risk_rejects_sell_when_not_in_portfolio(db_session) -> None:
@@ -38,7 +28,7 @@ def test_risk_rejects_sell_when_not_in_portfolio(db_session) -> None:
 
 
 def test_risk_sells_fraction_of_portfolio_holding(db_session) -> None:
-    manager = _manager(live_trading_enabled=True, max_trade_size_usd=10_000)
+    manager = _manager(live_trading_enabled=True, max_sell_notional_pct=100.0)
     holding = BrokerHolding(
         ticker="ADEA",
         quantity=20.0,
@@ -56,11 +46,17 @@ def test_risk_sells_fraction_of_portfolio_holding(db_session) -> None:
         raw_text="sold half my $ADEA",
         sell_fraction=0.5,
     )
-    result = manager.evaluate(signal, db_session, holding=holding, manager_id="individual")
+    result = manager.evaluate(
+        signal,
+        db_session,
+        holding=holding,
+        manager_id="individual",
+        portfolio_value_usd=10_000.0,
+    )
     assert result.allowed
-    assert result.normalized_trade_usd == 497.5
+    assert result.normalized_trade_usd == 500.0
     assert result.sell_fraction == 0.5
-    assert result.sell_quantity == 9.95
+    assert result.sell_quantity == 10.0
     assert result.reason == "sell_50pct_portfolio"
 
 
@@ -123,7 +119,11 @@ def test_risk_rejects_duplicate_tweet(db_session) -> None:
 
 
 def test_risk_daily_limit_per_ticker(db_session) -> None:
-    manager = _manager(cooldown_seconds=0, duplicate_window_seconds=0)
+    manager = _manager(
+        cooldown_seconds=0,
+        duplicate_window_seconds=0,
+        daily_limit_counts_simulation=True,
+    )
     parsed = ParsedSignal(
         tweet_pk=1,
         source_tweet_id="tweet-1",

@@ -5,9 +5,6 @@ from dataclasses import dataclass
 
 from app.execution.holdings import BrokerHolding
 
-# Leave headroom for price drift and Robinhood rounding on full exits.
-_SELL_BUFFER = 0.995
-
 
 @dataclass(slots=True)
 class SellOrderSizing:
@@ -22,6 +19,25 @@ def holding_market_value_usd(holding: BrokerHolding) -> float | None:
     if price <= 0:
         return None
     return holding.quantity * price
+
+
+def sell_fraction_to_target_weight(
+    *,
+    holding_market_value: float,
+    portfolio_value_usd: float,
+    target_portfolio_pct: float,
+) -> float | None:
+    """Return fraction of position to sell to reach target portfolio weight %.
+
+    Returns ``None`` when already at/below target or inputs are invalid.
+    """
+    if portfolio_value_usd <= 0 or holding_market_value <= 0:
+        return None
+    target = max(0.0, min(100.0, target_portfolio_pct))
+    current_weight_pct = 100.0 * holding_market_value / portfolio_value_usd
+    if current_weight_pct <= target:
+        return None
+    return (current_weight_pct - target) / current_weight_pct
 
 
 def _round_quantity(quantity: float) -> float:
@@ -48,7 +64,9 @@ def resolve_sell_order(
     if price <= 0:
         return None
 
-    target_qty = holding.quantity * fraction * _SELL_BUFFER
+    # Quantity is derived from the broker-reported holding, so it can never
+    # exceed the shares currently owned.
+    target_qty = holding.quantity * fraction
     target_qty = _round_quantity(target_qty)
     if target_qty <= 0:
         return None
@@ -60,7 +78,7 @@ def resolve_sell_order(
         target_amount = min(target_amount, market_value * fraction, max_trade_size_usd)
         target_qty = _round_quantity(min(target_qty, target_amount / price))
 
-    target_amount = min(target_amount, market_value * _SELL_BUFFER)
+    target_amount = min(target_amount, market_value)
     if target_amount < min_trade_notional_usd or target_qty <= 0:
         return None
 

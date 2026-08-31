@@ -35,21 +35,6 @@ class RecognizedTickerRegistry:
         )
         db.commit()
 
-    def seed(self, db: Session, tickers: set[str], *, manager_id: str) -> None:
-        for ticker in sorted(tickers):
-            symbol = ticker.upper()
-            if db.get(RecognizedTicker, {"manager_id": manager_id, "ticker": symbol}) is not None:
-                continue
-            db.add(
-                RecognizedTicker(
-                    manager_id=manager_id,
-                    ticker=symbol,
-                    source_tweet_id=None,
-                    first_seen_at=utc_now(),
-                )
-            )
-        db.commit()
-
     def all_tickers(self, db: Session, *, manager_id: str) -> set[str]:
         rows = db.execute(
             select(RecognizedTicker.ticker).where(RecognizedTicker.manager_id == manager_id)

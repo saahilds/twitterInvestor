@@ -2,19 +2,32 @@ from app.models.db_models import SignalAction
 from app.parsing.signal_parser import RuleBasedSignalParser
 
 
+def _one(signals):
+    assert len(signals) >= 1
+    return signals[0]
+
+
 def test_parser_detects_buy_signal() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["NVDA", "TSLA"], default_trade_size_usd=1.5)
-    signal = parser.parse("adding NVDA starter", source_tweet_id="1")
+    parser = RuleBasedSignalParser(known_tickers=["NVDA", "TSLA"])
+    signal = _one(parser.parse("adding NVDA starter", source_tweet_id="1"))
 
     assert signal.action == SignalAction.BUY
     assert signal.ticker == "NVDA"
-    assert signal.suggested_trade_usd == 1.5
+    assert signal.suggested_trade_usd == 0.0
     assert signal.confidence > 0
+
+
+def test_parser_extracts_port_allocation_on_buy() -> None:
+    parser = RuleBasedSignalParser(known_tickers=["RDDT"])
+    signal = _one(parser.parse("Added 2% port in $RDDT for a swing", source_tweet_id="rddt"))
+
+    assert signal.action == SignalAction.BUY
+    assert signal.portfolio_allocation_pct == 2.0
 
 
 def test_parser_detects_sell_signal() -> None:
     parser = RuleBasedSignalParser(known_tickers=["META"])
-    signal = parser.parse("trimmed META today", source_tweet_id="2")
+    signal = _one(parser.parse("trimmed META today", source_tweet_id="2"))
 
     assert signal.action == SignalAction.SELL
     assert signal.ticker == "META"
@@ -23,7 +36,7 @@ def test_parser_detects_sell_signal() -> None:
 
 def test_parser_sell_half_fraction() -> None:
     parser = RuleBasedSignalParser(known_tickers=["NVDA"])
-    signal = parser.parse("sold half my $NVDA", source_tweet_id="half")
+    signal = _one(parser.parse("sold half my $NVDA", source_tweet_id="half"))
 
     assert signal.action == SignalAction.SELL
     assert signal.sell_fraction == 0.5
@@ -31,7 +44,7 @@ def test_parser_sell_half_fraction() -> None:
 
 def test_parser_parses_cashtag_not_on_allowlist_for_risk_layer() -> None:
     parser = RuleBasedSignalParser(known_tickers=["AAPL"])
-    signal = parser.parse("adding $XYZ", source_tweet_id="3")
+    signal = _one(parser.parse("adding $XYZ", source_tweet_id="3"))
 
     assert signal.action == SignalAction.BUY
     assert signal.ticker == "XYZ"
@@ -39,7 +52,7 @@ def test_parser_parses_cashtag_not_on_allowlist_for_risk_layer() -> None:
 
 def test_parser_ignores_bare_symbol_not_on_allowlist() -> None:
     parser = RuleBasedSignalParser(known_tickers=["AAPL"])
-    signal = parser.parse("adding XYZ", source_tweet_id="3")
+    signal = _one(parser.parse("adding XYZ", source_tweet_id="3"))
 
     assert signal.action == SignalAction.IGNORE
     assert signal.ticker is None
@@ -61,39 +74,43 @@ $AAOI
 
 
 def test_parser_prefers_action_cashtag_over_allowlisted_thesis_symbol() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["AMD", "MSFT"], default_trade_size_usd=1.0)
+    parser = RuleBasedSignalParser(known_tickers=["AMD", "MSFT"])
     text = (
         "adding $ZZZZ starter. Here is the thesis. "
         "$AMD and $MSFT license patents from $ZZZZ."
     )
-    signal = parser.parse(text, source_tweet_id="unlisted-entry")
-
-    assert signal.ticker == "ZZZZ"
-    assert signal.action == SignalAction.BUY
+    signals = parser.parse(text, source_tweet_id="unlisted-entry")
+    buys = [s for s in signals if s.action == SignalAction.BUY]
+    assert len(buys) == 1
+    assert buys[0].ticker == "ZZZZ"
 
 
 def test_parser_ignores_commentary_sell() -> None:
     parser = RuleBasedSignalParser(known_tickers=["ASTS"])
-    signal = parser.parse(
-        "$ASTS down 8% today as people sell the launch news.",
-        source_tweet_id="commentary",
+    signal = _one(
+        parser.parse(
+            "$ASTS down 8% today as people sell the launch news.",
+            source_tweet_id="commentary",
+        )
     )
     assert signal.action == SignalAction.IGNORE
 
 
 def test_parser_ignores_future_tense_sell() -> None:
     parser = RuleBasedSignalParser(known_tickers=["ASTS"])
-    signal = parser.parse(
-        "Will possibly look to sell today depending on price $ASTS",
-        source_tweet_id="future",
+    signal = _one(
+        parser.parse(
+            "Will possibly look to sell today depending on price $ASTS",
+            source_tweet_id="future",
+        )
     )
     assert signal.action == SignalAction.IGNORE
 
 
 def test_parser_took_position_is_buy_not_sells_off_false_positive() -> None:
-    parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"], default_trade_size_usd=1.0)
-    signal = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")
-
-    assert signal.action == SignalAction.BUY
-    assert signal.ticker == "AAOI"
-    assert signal.score >= 4
+    parser = RuleBasedSignalParser(known_tickers=["AAOI", "SPY"])
+    signals = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")
+    buys = [s for s in signals if s.action == SignalAction.BUY]
+    assert len(buys) == 1
+    assert buys[0].ticker == "AAOI"
+    assert buys[0].score >= 4

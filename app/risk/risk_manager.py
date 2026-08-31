@@ -11,16 +11,30 @@ from app.models.db_models import ParsedSignal, SignalAction, Trade
 from app.models.schemas import RiskCheckResult, TradeSignal
 from app.parsing.buy_conviction import BuyConviction
 from app.risk.market_hours import is_within_regular_market_hours, us_trading_day_start_utc
-from app.risk.sell_sizing import resolve_sell_order
+from app.risk.portfolio_sizing import (
+    resolve_buy_allocation_pct,
+    resolve_buy_notional_usd,
+    resolve_max_sell_notional_usd,
+    resolve_min_trade_notional_usd,
+    resolve_portfolio_value,
+)
+from app.risk.sell_sizing import holding_market_value_usd, resolve_sell_order, sell_fraction_to_target_weight
 from app.services.recognized_tickers import RecognizedTickerRegistry
+from app.services.watchlist import WatchlistRegistry
 
 
 @dataclass(slots=True)
 class RiskConfig:
-    seed_tickers: set[str]
-    max_trade_size_usd: float
-    default_trade_size_usd: float
-    new_ticker_size_multiplier: float
+    default_buy_allocation_pct: float
+    standard_buy_allocation_pct_max: float
+    reload_buy_allocation_pct_max: float
+    thesis_buy_allocation_pct_min: float
+    thesis_buy_allocation_pct_max: float
+    min_trade_notional_pct: float
+    min_trade_notional_usd: float
+    cash_buffer_pct: float
+    max_sell_notional_pct: float
+    ck_portfolio_usd: float
     cooldown_seconds: int
     duplicate_window_seconds: int
     trading_window_enabled: bool = True
@@ -28,12 +42,9 @@ class RiskConfig:
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False
     live_trading_enabled: bool = False
-    min_buy_confidence_unlisted: float = 0.0
     min_sell_notional_usd: float = 1.0
-    thesis_trade_min_usd: float = 500.0
-    thesis_trade_max_usd: float = 1000.0
-    cash_buffer_usd: float = 0.0
-    min_buy_notional_usd: float = 1.0
+    watchlist_stale_days: int = 30
+    watchlist_max_conviction_score: float = 5.0
 
 
 class RiskManager:
@@ -43,9 +54,14 @@ class RiskManager:
         self,
         config: RiskConfig,
         registry: RecognizedTickerRegistry | None = None,
+        watchlist: WatchlistRegistry | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or RecognizedTickerRegistry()
+        self.watchlist = watchlist or WatchlistRegistry(
+            max_conviction_score=config.watchlist_max_conviction_score,
+            stale_days=config.watchlist_stale_days,
+        )
 
     def evaluate(
         self,
@@ -54,31 +70,38 @@ class RiskManager:
         *,
         manager_id: str,
         cash_available_usd: float | None = None,
+        portfolio_value_usd: float | None = None,
         holding: BrokerHolding | None = None,
+        as_of: datetime | None = None,
     ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
+
+        if signal.action == SignalAction.WATCH:
+            return RiskCheckResult(allowed=False, reason="watch_signal_no_trade")
 
         if not signal.ticker:
             return RiskCheckResult(allowed=False, reason="missing_ticker")
 
         ticker = signal.ticker.upper()
-        recognized = ticker in self.config.seed_tickers or self.registry.is_recognized(
-            ticker, db, manager_id=manager_id
-        )
-
-        if (
-            signal.action == SignalAction.BUY
-            and not recognized
-            and signal.confidence < self.config.min_buy_confidence_unlisted
-        ):
-            return RiskCheckResult(allowed=False, reason="unlisted_buy_low_confidence")
+        # Previously traded tickers (for sizing metadata / bare-ticker parse hints).
+        recognized = self.registry.is_recognized(ticker, db, manager_id=manager_id)
 
         if self.config.us_symbols_only and not _is_us_symbol(ticker):
             return RiskCheckResult(allowed=False, reason=f"non_us_symbol:{ticker}")
 
-        if self.config.trading_window_enabled and not is_within_regular_market_hours():
+        if self.config.trading_window_enabled and not is_within_regular_market_hours(as_of):
             return RiskCheckResult(allowed=False, reason="outside_market_hours")
+
+        portfolio = resolve_portfolio_value(
+            portfolio_value_usd=portfolio_value_usd,
+            simulation_portfolio_usd=self.config.ck_portfolio_usd,
+        )
+        min_notional = resolve_min_trade_notional_usd(
+            portfolio,
+            min_trade_notional_pct=self.config.min_trade_notional_pct,
+            min_trade_notional_usd=self.config.min_trade_notional_usd,
+        )
 
         sell_fraction: float | None = None
         sell_quantity: float | None = None
@@ -86,13 +109,45 @@ class RiskManager:
         if signal.action == SignalAction.SELL:
             if holding is None or holding.quantity <= 0:
                 return RiskCheckResult(allowed=False, reason=f"not_in_portfolio:{ticker}")
-            sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
+            market_value = holding_market_value_usd(holding)
+            if market_value is None or market_value <= 0:
+                return RiskCheckResult(allowed=False, reason="invalid_sell_size")
+            explicit_sell_sizing = (
+                signal.target_portfolio_pct is not None or signal.sell_sizing_explicit
+            )
+            if signal.target_portfolio_pct is not None:
+                computed = sell_fraction_to_target_weight(
+                    holding_market_value=market_value,
+                    portfolio_value_usd=portfolio,
+                    target_portfolio_pct=signal.target_portfolio_pct,
+                )
+                if computed is None:
+                    return RiskCheckResult(
+                        allowed=False,
+                        reason=f"already_at_or_below_target:{ticker}",
+                    )
+                sell_fraction = computed
+            else:
+                sell_fraction = signal.sell_fraction if signal.sell_fraction is not None else 1.0
+            if not explicit_sell_sizing:
+                sell_fraction = min(
+                    1.0,
+                    self._watchlist_multiplier(ticker, db, manager_id=manager_id) * sell_fraction,
+                )
             if sell_fraction <= 0:
                 return RiskCheckResult(allowed=False, reason="sell_fraction_zero")
+            if explicit_sell_sizing:
+                # Exact tweet sizing is authoritative, bounded only by shares owned.
+                max_sell_notional = market_value
+            else:
+                max_sell_notional = max(
+                    self.config.min_sell_notional_usd,
+                    resolve_max_sell_notional_usd(portfolio, self.config.max_sell_notional_pct),
+                )
             sell_order = resolve_sell_order(
                 holding,
                 sell_fraction,
-                max_trade_size_usd=self.config.max_trade_size_usd,
+                max_trade_size_usd=max_sell_notional,
                 min_trade_notional_usd=self.config.min_sell_notional_usd,
             )
             if sell_order is None or sell_order.amount_usd <= 0:
@@ -107,13 +162,21 @@ class RiskManager:
             normalized_trade, is_new_ticker, buy_conviction = self._resolve_trade_size(
                 signal=signal,
                 recognized=recognized,
+                portfolio_value_usd=portfolio,
                 cash_available_usd=cash_available_usd,
+                db=db,
+                manager_id=manager_id,
             )
-            if normalized_trade <= 0 or normalized_trade < self.config.min_buy_notional_usd:
+            if normalized_trade <= 0 or normalized_trade < min_notional:
                 return RiskCheckResult(allowed=False, reason="insufficient_cash")
 
-        if self._tweet_already_traded(signal.source_tweet_id, db, manager_id=manager_id):
-            return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}")
+        if self._tweet_already_traded(
+            signal.source_tweet_id,
+            db,
+            manager_id=manager_id,
+            ticker=ticker,
+        ):
+            return RiskCheckResult(allowed=False, reason=f"duplicate_tweet:{signal.source_tweet_id}:{ticker}")
 
         if self._daily_ticker_limit_reached(ticker, db, manager_id=manager_id):
             return RiskCheckResult(allowed=False, reason=f"daily_limit:{ticker}")
@@ -157,7 +220,7 @@ class RiskManager:
             pct = int(round((sell_fraction or 0) * 100))
             reason = f"sell_{pct}pct_portfolio"
         else:
-            reason = self._buy_reason(buy_conviction, normalized_trade)
+            reason = self._buy_reason(signal, buy_conviction, normalized_trade)
         return RiskCheckResult(
             allowed=True,
             reason=reason,
@@ -172,52 +235,85 @@ class RiskManager:
         *,
         signal: TradeSignal,
         recognized: bool,
+        portfolio_value_usd: float,
         cash_available_usd: float | None,
+        db: Session,
+        manager_id: str,
     ) -> tuple[float, bool, BuyConviction]:
         if signal.action != SignalAction.BUY:
             return 0.0, False, BuyConviction.STANDARD
 
         conviction = signal.buy_conviction or BuyConviction.STANDARD
-        if conviction == BuyConviction.THESIS:
-            target = self._thesis_size_from_confidence(signal.confidence)
-        else:
-            target = self.config.default_trade_size_usd
+        allocation_pct = resolve_buy_allocation_pct(
+            signal,
+            conviction,
+            default_buy_allocation_pct=self.config.default_buy_allocation_pct,
+            standard_buy_allocation_pct_max=self.config.standard_buy_allocation_pct_max,
+            reload_buy_allocation_pct_max=self.config.reload_buy_allocation_pct_max,
+            thesis_buy_allocation_pct_min=self.config.thesis_buy_allocation_pct_min,
+            thesis_buy_allocation_pct_max=self.config.thesis_buy_allocation_pct_max,
+        )
+        explicit_buy_sizing = signal.portfolio_allocation_pct is not None
+        watch_mult = 1.0
+        if signal.ticker and not explicit_buy_sizing:
+            watch_mult = self._watchlist_multiplier(signal.ticker, db, manager_id=manager_id)
 
-        target = min(target, self.config.max_trade_size_usd)
-
-        if cash_available_usd is not None:
-            spendable = max(0.0, cash_available_usd - self.config.cash_buffer_usd)
-            target = min(target, spendable)
-
+        target = resolve_buy_notional_usd(
+            portfolio_value_usd=portfolio_value_usd,
+            allocation_pct=allocation_pct,
+            cash_available_usd=cash_available_usd,
+            cash_buffer_pct=0.0 if explicit_buy_sizing else self.config.cash_buffer_pct,
+            min_trade_notional_pct=self.config.min_trade_notional_pct,
+            min_trade_notional_usd=self.config.min_trade_notional_usd,
+            watchlist_multiplier=watch_mult,
+        )
         return max(0.0, target), not recognized, conviction
 
-    def _thesis_size_from_confidence(self, confidence: float) -> float:
-        thesis_min = self.config.thesis_trade_min_usd
-        thesis_max = self.config.thesis_trade_max_usd
-        if thesis_max <= thesis_min:
-            return thesis_min
-        t = (confidence - 0.5) / 0.49
-        t = min(1.0, max(0.0, t))
-        return thesis_min + t * (thesis_max - thesis_min)
+    def _watchlist_multiplier(self, ticker: str, db: Session, *, manager_id: str) -> float:
+        entry = self.watchlist.get(ticker, db, manager_id=manager_id)
+        if entry is None:
+            return 1.0
+        from app.parsing.watch_conviction import WatchConviction, watch_size_multiplier
+
+        try:
+            conviction = WatchConviction(entry.watch_conviction)
+        except ValueError:
+            conviction = WatchConviction.STANDARD
+        return watch_size_multiplier(conviction, entry.conviction_score)
 
     @staticmethod
-    def _buy_reason(conviction: BuyConviction | None, normalized_trade: float) -> str:
+    def _buy_reason(
+        signal: TradeSignal,
+        conviction: BuyConviction | None,
+        normalized_trade: float,
+    ) -> str:
+        if signal.portfolio_allocation_pct is not None:
+            pct = int(round(signal.portfolio_allocation_pct))
+            return f"allocation_{pct}pct_{int(round(normalized_trade))}"
         if conviction == BuyConviction.THESIS:
             return f"thesis_sized_{int(round(normalized_trade))}"
         if conviction == BuyConviction.RELOAD:
             return "reload_sized"
         return "standard_sized"
 
-    def _tweet_already_traded(self, source_tweet_id: str, db: Session, *, manager_id: str) -> bool:
+    def _tweet_already_traded(
+        self,
+        source_tweet_id: str,
+        db: Session,
+        *,
+        manager_id: str,
+        ticker: str | None = None,
+    ) -> bool:
+        conditions = [
+            ParsedSignal.source_tweet_id == source_tweet_id,
+            Trade.manager_id == manager_id,
+        ]
+        if ticker:
+            conditions.append(Trade.ticker == ticker.upper())
         existing = db.execute(
             select(Trade.id)
             .join(ParsedSignal, Trade.parsed_signal_id == ParsedSignal.id)
-            .where(
-                and_(
-                    ParsedSignal.source_tweet_id == source_tweet_id,
-                    Trade.manager_id == manager_id,
-                )
-            )
+            .where(and_(*conditions))
             .limit(1)
         ).scalar_one_or_none()
         return existing is not None

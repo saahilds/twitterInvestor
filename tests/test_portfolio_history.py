@@ -16,6 +16,8 @@ from app.risk.market_hours import (
 from app.services import portfolio_history
 
 ET = ZoneInfo("America/New_York")
+# Fixed weekday so weekend CI/local runs don't exclude extended-hours points.
+_WEEKDAY = datetime(2026, 7, 24, tzinfo=ET).date()  # Friday
 
 
 def _session():
@@ -25,8 +27,7 @@ def _session():
 
 
 def _et_today_at(hour: int, minute: int = 0) -> datetime:
-    today = datetime.now(ET).date()
-    return datetime.combine(today, time(hour, minute), tzinfo=ET).astimezone(timezone.utc)
+    return datetime.combine(_WEEKDAY, time(hour, minute), tzinfo=ET).astimezone(timezone.utc)
 
 
 def test_filter_includes_after_hours_not_late_night() -> None:
@@ -42,7 +43,7 @@ def test_filter_includes_after_hours_not_late_night() -> None:
 
 
 def test_measured_series_uses_extended_session_window() -> None:
-    open_utc, close_utc = extended_chart_bounds_for_date(datetime.now(ET).date())
+    open_utc, close_utc = extended_chart_bounds_for_date(_WEEKDAY)
     mid = open_utc + (close_utc - open_utc) / 2
     series = portfolio_history.build_measured_balance_series(
         [(mid, 6800.0), (mid + timedelta(minutes=30), 6820.0)],
@@ -144,8 +145,8 @@ def test_aggregate_daily_chart_points_uses_last_reading_per_day() -> None:
 
 def test_build_chart_all_range_uses_earliest_snapshot() -> None:
     db = _session()
-    old = _et_today_at(11, 0) - timedelta(days=45)
-    recent = _et_today_at(15, 0)
+    recent = datetime.combine(_WEEKDAY, time(15, 0), tzinfo=ET).astimezone(timezone.utc)
+    old = recent - timedelta(days=45)
     db.add(
         AccountSnapshot(
             account_number=None,
@@ -166,7 +167,7 @@ def test_build_chart_all_range_uses_earliest_snapshot() -> None:
         db,
         range_key="all",
         account_number=None,
-        current_value=None,
+        current_value=6500.0,
         live_trades_only=False,
     )
 
@@ -221,7 +222,7 @@ def test_annotations_include_late_trade_on_multi_day_range() -> None:
     db.add(trade)
     db.commit()
 
-    now = datetime.now(timezone.utc)
+    now = _et_today_at(23, 0)
     start = portfolio_history.range_start("1w", now)
     session_open, session_end = chart_session_bounds_utc(now)
     window = portfolio_history.resolve_window(
@@ -258,7 +259,7 @@ def test_annotations_exclude_late_trade_on_1d_range() -> None:
     db.add(trade)
     db.commit()
 
-    now = datetime.now(timezone.utc)
+    now = _et_today_at(23, 0)
     start = portfolio_history.range_start("1d", now)
     session_open, session_end = chart_session_bounds_utc(now)
     window = portfolio_history.resolve_window(
@@ -282,7 +283,7 @@ def test_build_chart_includes_after_hours_snapshots() -> None:
     morning = _et_today_at(11, 0)
     afterhours = _et_today_at(17, 30)
     late_night = _et_today_at(21, 0)
-    open_utc, close_utc = extended_chart_bounds_for_date(datetime.now(ET).date())
+    open_utc, close_utc = extended_chart_bounds_for_date(_WEEKDAY)
 
     series = portfolio_history.build_measured_balance_series(
         [(morning, 6800.0), (afterhours, 6850.0), (late_night, 6900.0)],

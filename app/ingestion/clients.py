@@ -336,9 +336,7 @@ class PlaywrightTwitterClient:
 
         for attempt in range(1, self.profile_load_retries + 1):
             try:
-                if attempt == 1:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
-                else:
+                if attempt > 1:
                     self.logger.warning(
                         "x_profile_load_retry",
                         extra={
@@ -346,10 +344,25 @@ class PlaywrightTwitterClient:
                             "account": account,
                             "attempt": attempt,
                             "max_attempts": self.profile_load_retries,
+                            "last_error": str(last_error) if last_error else None,
                         },
                     )
-                    await page.reload(wait_until="domcontentloaded", timeout=self.timeout_ms)
+                    await asyncio.sleep(min(2.0 * (attempt - 1), 6.0))
+                    # Re-warm session before another profile hit (helps after 403/429-style blocks).
+                    self._login_checked = False
+                    try:
+                        await self._ensure_authenticated(page)
+                    except Exception as auth_exc:
+                        self.logger.warning(
+                            "x_profile_reauth_failed",
+                            extra={
+                                "event_type": "x_profile",
+                                "account": account,
+                                "error": str(auth_exc),
+                            },
+                        )
 
+                await page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
                 await page.wait_for_timeout(1_500)
 
                 if await _x_timeline_error_visible(page):
@@ -365,6 +378,7 @@ class PlaywrightTwitterClient:
                     if await _click_x_timeline_retry(page):
                         await page.wait_for_timeout(2_500)
                     elif attempt < self.profile_load_retries:
+                        last_error = RuntimeError("x_timeline_error_visible")
                         continue
 
                 await self._ensure_posts_tab(page)
@@ -372,6 +386,9 @@ class PlaywrightTwitterClient:
                 return
             except Exception as exc:
                 last_error = exc
+                retryable = _is_retryable_navigation_error(exc) or (
+                    PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError)
+                )
                 if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
                     self.logger.warning(
                         "x_profile_articles_timeout",
@@ -384,9 +401,29 @@ class PlaywrightTwitterClient:
                             "article_count": await page.locator("article").count(),
                         },
                     )
-                    if attempt < self.profile_load_retries:
-                        continue
+                elif _is_retryable_navigation_error(exc):
+                    self.logger.warning(
+                        "x_profile_navigation_failed",
+                        extra={
+                            "event_type": "x_profile",
+                            "account": account,
+                            "attempt": attempt,
+                            "error": str(exc),
+                            "headless": self.headless,
+                            "channel": self.channel,
+                        },
+                    )
+                if retryable and attempt < self.profile_load_retries:
+                    continue
+                if PlaywrightTimeoutError is not None and isinstance(exc, PlaywrightTimeoutError):
                     raise RuntimeError("playwright_timeout_loading_x_profile") from exc
+                if _is_retryable_navigation_error(exc):
+                    raise RuntimeError(
+                        "playwright_http_blocked_loading_x_profile: "
+                        "X rejected the profile request (often headless/chromium). "
+                        "Set PLAYWRIGHT_HEADLESS=false and PLAYWRIGHT_CHANNEL=chrome, "
+                        "re-login in the opened window if prompted, then restart."
+                    ) from exc
                 raise
 
         if last_error is not None:
@@ -536,6 +573,26 @@ def _row_to_tweet(row: dict) -> TweetData | None:
 def body_indicates_x_timeline_error(body_text: str) -> bool:
     lowered = body_text.lower()
     return "something went wrong" in lowered or "try reloading" in lowered
+
+
+def _is_retryable_navigation_error(exc: BaseException) -> bool:
+    """True for transient Chromium/X navigation failures worth retrying."""
+    message = str(exc).lower()
+    markers = (
+        "err_http_response_code_failure",
+        "err_connection_reset",
+        "err_connection_closed",
+        "err_connection_refused",
+        "err_network_changed",
+        "err_timed_out",
+        "err_aborted",
+        "err_empty_response",
+        "err_internet_disconnected",
+        "net::err_",
+        "navigation failed",
+        "ns_error_net",
+    )
+    return any(marker in message for marker in markers)
 
 
 async def _x_timeline_error_visible(page: Page) -> bool:

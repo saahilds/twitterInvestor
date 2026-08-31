@@ -9,42 +9,81 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.config.account_managers import AccountManagerConfig, DEFAULT_MANAGER_ID, default_manager_id
 from app.config.settings import Settings
 from app.execution.holdings import resolve_stocks_plus_cash
+from app.execution.robinhood_auth_age import compute_auth_age
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.execution.robinhood_session import RobinhoodSessionManager
-from app.models.db_models import ParsedSignal, RecognizedTicker, Trade, Tweet
+from app.models.db_models import (
+    ParsedSignal,
+    ParserFeedback,
+    RecognizedTicker,
+    SignalAction,
+    Trade,
+    Tweet,
+    TweetLabel,
+    WatchlistEntry,
+    utc_now,
+)
+from app.parsing.buy_conviction import infer_buy_conviction
 from app.risk.market_hours import is_within_regular_market_hours
 from app.models.schemas import (
     BrokerHoldingsSnapshot,
     ChartPointRead,
+    DailyDigestRead,
     DashboardSnapshot,
     DashboardTweetRead,
     HealthResponse,
     ParsedSignalRead,
+    ParserFeedbackCreate,
+    ParserFeedbackRead,
+    ReviewQueueItem,
+    ReviewQueueLabelCreate,
+    ReviewQueueLabelRead,
+    RobinhoodReauthStatusResponse,
     PortfolioChartResponse,
     PortfolioChartSummary,
     PortfolioPnlResponse,
     TradeChartAnnotationRead,
     RobinhoodHoldingRead,
     TradeRead,
+    WatchlistEntryRead,
     TweetRead,
     WorkerControlResponse,
 )
 from app.services import portfolio_history
+from app.services.daily_digest import DailyDigestService
 from app.services.pnl_service import PnlService
 from app.services.tweet_query import (
     DEFAULT_TWEET_LIMIT,
     DEFAULT_TWEET_RANGE,
     DEFAULT_TWEET_SIGNAL_FILTER,
+    DEFAULT_TWEET_SORT,
+    DEFAULT_TWEET_TRADED_FILTER,
     MAX_TWEET_LIMIT,
     TweetWindowError,
     fetch_dashboard_tweets,
     normalize_signal_filter,
+    normalize_ticker_prefix,
+    normalize_traded_filter,
+    normalize_tweet_sort,
     resolve_tweet_window,
+)
+from app.services.trade_query import (
+    DEFAULT_TRADE_ACTION_FILTER,
+    DEFAULT_TRADE_LIMIT,
+    DEFAULT_TRADE_MODE_FILTER,
+    DEFAULT_TRADE_SORT,
+    DEFAULT_TRADE_STATUS_FILTER,
+    MAX_TRADE_LIMIT,
+    fetch_dashboard_trades,
+    normalize_trade_action_filter,
+    normalize_trade_mode_filter,
+    normalize_trade_sort,
+    normalize_trade_status_filter,
 )
 from app.services.trade_status import TradeStatusSync
 from app.services.worker import BotOrchestrator
@@ -59,10 +98,12 @@ def create_router(
     pnl_service: PnlService | None = None,
     brokers_by_manager: dict[str, object] | None = None,
     rh_session: RobinhoodSessionManager | None = None,
+    digest_service: DailyDigestService | None = None,
 ) -> APIRouter:
     router = APIRouter()
     brokers_by_manager = brokers_by_manager or {}
     manager_ids = [cfg.id for cfg in manager_configs]
+    digest_service = digest_service or DailyDigestService(session_factory)
 
     default_manager = default_manager_id(settings, manager_configs)
 
@@ -71,21 +112,48 @@ def create_router(
             return manager
         return default_manager
 
-    def _tweet_to_dashboard_read(tweet: Tweet) -> DashboardTweetRead:
+    def _tweet_to_dashboard_read(
+        tweet: Tweet,
+        feedback_map: dict[str, str] | None = None,
+    ) -> DashboardTweetRead:
         latest = None
         if tweet.parsed_signals:
             latest = max(tweet.parsed_signals, key=lambda signal: signal.created_at)
         payload = TweetRead.model_validate(tweet).model_dump()
+        traded = False
+        trade_status = None
+        trade_amount = None
+        buy_conviction = None
         if latest is not None:
+            trades = list(latest.trades) if latest.trades else []
+            if not trades:
+                trades = [t for s in tweet.parsed_signals for t in s.trades]
+            if trades:
+                trade = max(trades, key=lambda row: row.created_at)
+                traded = True
+                trade_status = trade.status
+                trade_amount = trade.amount_usd
+            if latest.action == SignalAction.BUY:
+                buy_conviction = infer_buy_conviction(latest.raw_text or tweet.text).value
             payload.update(
                 {
                     "signal_action": latest.action.value,
                     "signal_ticker": latest.ticker,
                     "signal_confidence": latest.confidence,
                     "signal_rejection_reason": latest.rejection_reason,
+                    "buy_conviction": buy_conviction,
+                    "traded": traded,
+                    "trade_status": trade_status,
+                    "trade_amount_usd": trade_amount,
                 }
             )
+        if feedback_map and tweet.tweet_id in feedback_map:
+            payload["feedback_correct_action"] = feedback_map[tweet.tweet_id]
         return DashboardTweetRead(**payload)
+
+    def _feedback_map(db: Session) -> dict[str, str]:
+        rows = db.execute(select(ParserFeedback).order_by(ParserFeedback.created_at.desc()).limit(500)).scalars().all()
+        return {row.tweet_id: row.correct_action.value for row in rows}
 
     def _session_snapshot():
         if rh_session is not None:
@@ -95,14 +163,34 @@ def create_router(
                 return broker.session_snapshot()
         return None
 
-    @router.get("/health", response_model=HealthResponse)
-    async def health(manager: str | None = Query(default=None)) -> HealthResponse:
-        snapshot = orchestrator.snapshot()
-        active_manager = _resolve_manager_id(manager)
+    def _auth_age_fields() -> dict:
+        if settings.broker_backend != "robinhood":
+            return {
+                "robinhood_auth_last_at": None,
+                "robinhood_auth_age_days": None,
+                "robinhood_auth_days_remaining": None,
+                "robinhood_auth_refresh_due_at": None,
+                "robinhood_auth_status": None,
+                "robinhood_reauth_status": None,
+            }
+        age = compute_auth_age(
+            max_age_days=settings.robinhood_pickle_max_age_days,
+            warn_days=settings.robinhood_pickle_warn_days,
+        )
+        reauth_status = None
+        if rh_session is not None:
+            reauth_status = rh_session.reauth_snapshot().status
+        return {
+            "robinhood_auth_last_at": age.last_authenticated_at,
+            "robinhood_auth_age_days": age.age_days,
+            "robinhood_auth_days_remaining": age.days_remaining,
+            "robinhood_auth_refresh_due_at": age.refresh_due_at,
+            "robinhood_auth_status": age.status,
+            "robinhood_reauth_status": reauth_status,
+        }
+
+    def _health_response(*, active_manager: str, snapshot) -> HealthResponse:
         session = _session_snapshot()
-        rh_logged_in = session.logged_in if session is not None else None
-        rh_error = session.last_error if session is not None else None
-        rh_retry = session.retry_in_seconds if session is not None and session.last_error else None
         return HealthResponse(
             worker_running=snapshot.running,
             worker_paused=snapshot.paused,
@@ -114,12 +202,53 @@ def create_router(
             target_account=settings.target_account,
             poll_interval_seconds=settings.poll_interval_seconds,
             dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
-            default_trade_size_usd=settings.default_trade_size_usd,
-            robinhood_logged_in=rh_logged_in,
-            robinhood_auth_error=rh_error,
-            robinhood_auth_retry_in_seconds=rh_retry,
+            default_buy_allocation_pct=settings.default_buy_allocation_pct,
+            robinhood_logged_in=session.logged_in if session is not None else None,
+            robinhood_auth_error=session.last_error if session is not None else None,
+            robinhood_auth_retry_in_seconds=(
+                session.retry_in_seconds if session is not None and session.last_error else None
+            ),
             managers=snapshot.managers,
             active_manager=active_manager,
+            **_auth_age_fields(),
+        )
+
+    @router.get("/health", response_model=HealthResponse)
+    async def health(manager: str | None = Query(default=None)) -> HealthResponse:
+        snapshot = orchestrator.snapshot()
+        active_manager = _resolve_manager_id(manager)
+        return _health_response(active_manager=active_manager, snapshot=snapshot)
+
+    @router.post("/robinhood/reauth", response_model=RobinhoodReauthStatusResponse)
+    async def start_robinhood_reauth() -> RobinhoodReauthStatusResponse:
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        if not settings.robinhood_username or not settings.robinhood_password:
+            raise HTTPException(status_code=400, detail="missing_robinhood_credentials")
+        job = await asyncio.to_thread(rh_session.start_reauth)
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
+        )
+
+    @router.get("/robinhood/reauth/status", response_model=RobinhoodReauthStatusResponse)
+    async def robinhood_reauth_status() -> RobinhoodReauthStatusResponse:
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        job = rh_session.reauth_snapshot()
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
         )
 
     @router.get("/tweets", response_model=list[TweetRead])
@@ -144,6 +273,19 @@ def create_router(
                 .limit(limit)
             ).scalars().all()
         return [ParsedSignalRead.model_validate(row) for row in rows]
+
+    @router.get("/watchlist", response_model=list[WatchlistEntryRead])
+    async def list_watchlist(
+        manager: str | None = Query(default=None),
+    ) -> list[WatchlistEntryRead]:
+        manager_id = _resolve_manager_id(manager)
+        with session_factory() as db:
+            rows = db.execute(
+                select(WatchlistEntry)
+                .where(WatchlistEntry.manager_id == manager_id)
+                .order_by(WatchlistEntry.conviction_score.desc(), WatchlistEntry.last_seen_at.desc())
+            ).scalars().all()
+        return [WatchlistEntryRead.model_validate(row) for row in rows]
 
     @router.get("/trades", response_model=list[TradeRead])
     async def list_trades(
@@ -342,6 +484,9 @@ def create_router(
         until: datetime | None = Query(default=None),
         limit: int = Query(default=DEFAULT_TWEET_LIMIT, ge=1, le=MAX_TWEET_LIMIT),
         signal_filter: str = Query(default=DEFAULT_TWEET_SIGNAL_FILTER, alias="signal"),
+        ticker: str | None = Query(default=None),
+        traded_filter: str = Query(default=DEFAULT_TWEET_TRADED_FILTER, alias="traded"),
+        sort: str = Query(default=DEFAULT_TWEET_SORT),
     ) -> list[DashboardTweetRead]:
         try:
             since_dt, until_dt = resolve_tweet_window(
@@ -360,8 +505,51 @@ def create_router(
                 until=until_dt,
                 limit=limit,
                 signal_filter=normalize_signal_filter(signal_filter),
+                ticker=normalize_ticker_prefix(ticker),
+                traded_filter=normalize_traded_filter(traded_filter),
+                sort=normalize_tweet_sort(sort),
             )
-        return [_tweet_to_dashboard_read(row) for row in rows]
+            feedback = _feedback_map(db)
+        return [_tweet_to_dashboard_read(row, feedback) for row in rows]
+
+    @router.get("/dashboard/trades", response_model=list[TradeRead])
+    async def dashboard_trades(
+        range_key: str = Query(default=DEFAULT_TWEET_RANGE, alias="range"),
+        since: datetime | None = Query(default=None),
+        until: datetime | None = Query(default=None),
+        limit: int = Query(default=DEFAULT_TRADE_LIMIT, ge=1, le=MAX_TRADE_LIMIT),
+        ticker: str | None = Query(default=None),
+        action_filter: str = Query(default=DEFAULT_TRADE_ACTION_FILTER, alias="action"),
+        status_filter: str = Query(default=DEFAULT_TRADE_STATUS_FILTER, alias="status"),
+        mode_filter: str = Query(default=DEFAULT_TRADE_MODE_FILTER, alias="mode"),
+        sort: str = Query(default=DEFAULT_TRADE_SORT),
+        manager: str | None = Query(default=None),
+    ) -> list[TradeRead]:
+        try:
+            since_dt, until_dt = resolve_tweet_window(
+                range_key=range_key,
+                since=since,
+                until=until,
+                now=datetime.now(timezone.utc),
+            )
+        except TweetWindowError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        manager_id = _resolve_manager_id(manager)
+        with session_factory() as db:
+            rows = fetch_dashboard_trades(
+                db,
+                manager_id=manager_id,
+                since=since_dt,
+                until=until_dt,
+                limit=limit,
+                ticker=normalize_ticker_prefix(ticker),
+                action_filter=normalize_trade_action_filter(action_filter),
+                status_filter=normalize_trade_status_filter(status_filter),
+                mode_filter=normalize_trade_mode_filter(mode_filter),
+                sort=normalize_trade_sort(sort),
+            )
+        return [TradeRead.model_validate(row) for row in rows]
 
     @router.get("/dashboard/data", response_model=DashboardSnapshot)
     async def dashboard_data(
@@ -401,6 +589,11 @@ def create_router(
                 .where(RecognizedTicker.manager_id == manager_id)
                 .order_by(RecognizedTicker.ticker.asc())
             ).scalars().all()
+            watchlist_rows = db.execute(
+                select(WatchlistEntry)
+                .where(WatchlistEntry.manager_id == manager_id)
+                .order_by(WatchlistEntry.conviction_score.desc(), WatchlistEntry.last_seen_at.desc())
+            ).scalars().all()
 
         if include_broker:
             broker_holdings = await _fetch_broker_holdings(manager_id=manager_id)
@@ -411,38 +604,207 @@ def create_router(
                 error="positions_refresh_skipped",
             )
 
-        session = _session_snapshot()
+        digest_row = digest_service.get()
+        daily_digest = DailyDigestRead(**digest_service.to_api_dict(digest_row)) if digest_row else None
         return DashboardSnapshot(
-            health=HealthResponse(
-                worker_running=snapshot.running,
-                worker_paused=snapshot.paused,
-                simulation_mode=settings.simulation_mode,
-                live_trading_enabled=settings.live_trading_enabled,
-                order_execution_mode=settings.order_execution_mode,
-                trading_window_enabled=settings.trading_window_enabled,
-                within_market_hours=is_within_regular_market_hours(),
-                target_account=settings.target_account,
-                poll_interval_seconds=settings.poll_interval_seconds,
-                dashboard_positions_refresh_seconds=settings.dashboard_positions_refresh_seconds,
-                default_trade_size_usd=settings.default_trade_size_usd,
-                robinhood_logged_in=session.logged_in if session is not None else None,
-                robinhood_auth_error=session.last_error if session is not None else None,
-                robinhood_auth_retry_in_seconds=(
-                    session.retry_in_seconds if session is not None and session.last_error else None
-                ),
-                managers=snapshot.managers,
-                active_manager=manager_id,
-            ),
+            health=_health_response(active_manager=manager_id, snapshot=snapshot),
             pnl=pnl,
             broker_holdings=broker_holdings,
             recent_tweets=[],
             recent_trades=[TradeRead.model_validate(row) for row in trades],
             recognized_tickers=[str(ticker) for ticker in recognized],
+            watchlist=[WatchlistEntryRead.model_validate(row) for row in watchlist_rows],
             worker_iteration_count=snapshot.iteration_count,
             worker_last_error=snapshot.last_error,
             active_manager=manager_id,
             managers=snapshot.managers,
+            daily_digest=daily_digest,
         )
+
+    @router.get("/parser/feedback", response_model=list[ParserFeedbackRead])
+    async def list_parser_feedback(limit: int = Query(default=50, ge=1, le=200)) -> list[ParserFeedbackRead]:
+        with session_factory() as db:
+            rows = db.execute(
+                select(ParserFeedback).order_by(ParserFeedback.created_at.desc()).limit(limit)
+            ).scalars().all()
+        return [ParserFeedbackRead.model_validate(row) for row in rows]
+
+    @router.get("/dashboard/review-queue", response_model=list[ReviewQueueItem])
+    async def dashboard_review_queue(
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[ReviewQueueItem]:
+        with session_factory() as db:
+            signals = (
+                db.execute(
+                    select(ParsedSignal)
+                    .options(selectinload(ParsedSignal.tweet))
+                    .where(ParsedSignal.needs_review.is_(True))
+                    .order_by(ParsedSignal.created_at.desc())
+                    .limit(limit * 3)
+                )
+                .scalars()
+                .all()
+            )
+            items: list[ReviewQueueItem] = []
+            for signal in signals:
+                label_stmt = select(TweetLabel).where(TweetLabel.tweet_id == signal.source_tweet_id)
+                if signal.ticker:
+                    label_stmt = label_stmt.where(TweetLabel.ticker == signal.ticker)
+                existing_label = db.execute(label_stmt.limit(1)).scalar_one_or_none()
+                if existing_label is not None:
+                    continue
+                tweet = signal.tweet
+                items.append(
+                    ReviewQueueItem(
+                        signal_id=signal.id,
+                        tweet_id=signal.source_tweet_id,
+                        tweet_text=tweet.text if tweet is not None else signal.raw_text,
+                        ticker=signal.ticker,
+                        action=signal.action,
+                        confidence=signal.confidence,
+                        review_reason=signal.review_reason,
+                        posted_at=tweet.posted_at if tweet is not None else None,
+                        created_at=signal.created_at,
+                        manager_id=signal.manager_id,
+                    )
+                )
+                if len(items) >= limit:
+                    break
+        return items
+
+    @router.post(
+        "/dashboard/review-queue/{signal_id}/label",
+        response_model=ReviewQueueLabelRead,
+    )
+    async def label_review_queue_item(
+        signal_id: int,
+        body: ReviewQueueLabelCreate,
+    ) -> ReviewQueueLabelRead:
+        if body.action not in {SignalAction.BUY, SignalAction.SELL}:
+            raise HTTPException(status_code=422, detail="action_must_be_buy_or_sell")
+        with session_factory() as db:
+            signal = db.execute(
+                select(ParsedSignal)
+                .options(selectinload(ParsedSignal.tweet))
+                .where(ParsedSignal.id == signal_id)
+            ).scalar_one_or_none()
+            if signal is None:
+                raise HTTPException(status_code=404, detail="signal_not_found")
+            tweet_text = signal.tweet.text if signal.tweet is not None else signal.raw_text
+            label = TweetLabel(
+                tweet_id=signal.source_tweet_id,
+                ticker=signal.ticker,
+                action=body.action,
+                segment_text=signal.raw_text or tweet_text,
+                labeled_by=body.labeled_by,
+            )
+            db.add(label)
+            signal.needs_review = False
+            signal.review_reason = None
+            db.commit()
+            db.refresh(label)
+            return ReviewQueueLabelRead(
+                signal_id=signal.id,
+                tweet_id=signal.source_tweet_id,
+                ticker=signal.ticker,
+                action=body.action,
+                needs_review=signal.needs_review,
+                label_id=label.id,
+            )
+
+    @router.delete("/dashboard/review-queue/{signal_id}/label")
+    async def undo_review_queue_label(signal_id: int) -> dict:
+        with session_factory() as db:
+            signal = db.execute(
+                select(ParsedSignal).where(ParsedSignal.id == signal_id)
+            ).scalar_one_or_none()
+            if signal is None:
+                raise HTTPException(status_code=404, detail="signal_not_found")
+            label_stmt = select(TweetLabel).where(TweetLabel.tweet_id == signal.source_tweet_id)
+            if signal.ticker:
+                label_stmt = label_stmt.where(TweetLabel.ticker == signal.ticker)
+            labels = db.execute(label_stmt.order_by(TweetLabel.created_at.desc())).scalars().all()
+            if not labels:
+                raise HTTPException(status_code=404, detail="label_not_found")
+            for label in labels:
+                db.delete(label)
+            signal.needs_review = True
+            signal.review_reason = signal.review_reason or "trade_header_low_conf"
+            db.commit()
+        return {"ok": True, "signal_id": signal_id}
+
+    @router.post("/parser/feedback", response_model=ParserFeedbackRead)
+    async def create_parser_feedback(body: ParserFeedbackCreate) -> ParserFeedbackRead:
+        with session_factory() as db:
+            tweet = db.execute(
+                select(Tweet)
+                .options(selectinload(Tweet.parsed_signals))
+                .where(Tweet.tweet_id == body.tweet_id)
+            ).scalar_one_or_none()
+            if tweet is None:
+                raise HTTPException(status_code=404, detail="tweet_not_found")
+            latest = None
+            if tweet.parsed_signals:
+                latest = max(tweet.parsed_signals, key=lambda signal: signal.created_at)
+            existing = db.execute(
+                select(ParserFeedback).where(ParserFeedback.tweet_id == body.tweet_id)
+            ).scalar_one_or_none()
+            if existing is None:
+                existing = ParserFeedback(tweet_id=body.tweet_id, tweet_text=tweet.text)
+                db.add(existing)
+            existing.tweet_text = tweet.text
+            existing.parser_action = latest.action if latest else SignalAction.IGNORE
+            existing.parser_ticker = latest.ticker if latest else None
+            existing.correct_action = body.correct_action
+            existing.note = body.note
+            existing.exported_at = None
+            db.commit()
+            db.refresh(existing)
+            return ParserFeedbackRead.model_validate(existing)
+
+    @router.delete("/parser/feedback/{tweet_id}")
+    async def delete_parser_feedback(tweet_id: str) -> dict:
+        with session_factory() as db:
+            row = db.execute(
+                select(ParserFeedback).where(ParserFeedback.tweet_id == tweet_id)
+            ).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="feedback_not_found")
+            db.delete(row)
+            db.commit()
+        return {"ok": True, "tweet_id": tweet_id}
+
+    @router.get("/digest/latest", response_model=DailyDigestRead)
+    async def digest_latest() -> DailyDigestRead:
+        row = digest_service.get()
+        if row is None:
+            row = digest_service.rebuild()
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_unavailable")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.get("/digest", response_model=DailyDigestRead)
+    async def digest_by_date(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.get(date)
+        if row is None:
+            row = digest_service.rebuild(date)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_not_found")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.post("/digest/rebuild", response_model=DailyDigestRead)
+    async def digest_rebuild(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.rebuild(date, force=True)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_rebuild_failed")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
+
+    @router.post("/digest/finalize", response_model=DailyDigestRead)
+    async def digest_finalize(date: str | None = Query(default=None)) -> DailyDigestRead:
+        row = digest_service.finalize(date)
+        if row is None:
+            raise HTTPException(status_code=404, detail="digest_finalize_failed")
+        return DailyDigestRead(**digest_service.to_api_dict(row))
 
     @router.get("/broker/holdings", response_model=BrokerHoldingsSnapshot)
     async def broker_holdings(manager: str | None = Query(default=None)) -> BrokerHoldingsSnapshot:
