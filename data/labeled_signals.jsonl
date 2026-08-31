@@ -78,3 +78,5 @@
 {"text": "$IWM smashed", "action": "IGNORE", "source": "reviewed"}
 {"text": "$QQQ ripping into close", "action": "IGNORE", "source": "reviewed"}
 {"text": "$SPY sold off into the close", "action": "IGNORE", "source": "reviewed"}
+{"text": "🚨Trade🚨 Upsized $INTC to a 6% position.", "action": "BUY", "source": "curated"}
+{"text": "🚨Trade🚨 Downsized $NVDA after the run.", "action": "SELL", "source": "curated"}

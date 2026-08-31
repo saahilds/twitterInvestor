@@ -521,6 +521,18 @@
         </div>
       </section>
 
+      <section class="section" aria-label="Uncertain trade alerts">
+        <div class="panel">
+          <div class="section-head">
+            <h2>Uncertain trade alerts</h2>
+            <span class="hint" id="reviewQueueMeta">—</span>
+          </div>
+          <p class="hint" style="margin:0 0 0.5rem">Low-confidence Trade-header picks already executed — confirm BUY/SELL to train the parser.</p>
+          <ul class="feed" id="reviewQueueFeed"></ul>
+          <p class="empty" id="reviewQueueEmpty">Queue clear — no uncertain trade alerts.</p>
+        </div>
+      </section>
+
       <section class="section grid-2" aria-label="Activity">
         <div class="panel">
           <h3>Recent tweets</h3>
@@ -1293,6 +1305,64 @@
       await loadTweets();
     }
 
+    async function loadReviewQueue() {
+      const res = await fetch("/dashboard/review-queue?limit=50");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const items = await res.json();
+      renderReviewQueue(items);
+      return items;
+    }
+
+    async function submitReviewLabel(signalId, action) {
+      const res = await fetch(`/dashboard/review-queue/${signalId}/label`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadReviewQueue();
+    }
+
+    function renderReviewQueue(items) {
+      const feed = document.getElementById("reviewQueueFeed");
+      const empty = document.getElementById("reviewQueueEmpty");
+      const meta = document.getElementById("reviewQueueMeta");
+      feed.innerHTML = "";
+      empty.style.display = items.length ? "none" : "block";
+      meta.textContent = items.length
+        ? `${items.length} pending`
+        : "clear";
+      for (const item of items) {
+        const li = document.createElement("li");
+        const snippet = (item.tweet_text || "").replace(/\s+/g, " ").trim();
+        const short = snippet.length > 160 ? `${snippet.slice(0, 157)}…` : snippet;
+        const conf = item.confidence != null ? Number(item.confidence).toFixed(2) : "—";
+        li.innerHTML = `
+          <div class="meta">
+            ${signalBadge(item.action, item.ticker)}
+            <span class="badge ignore">conf ${esc(conf)}</span>
+            ${item.review_reason ? `<span class="badge watch">${esc(item.review_reason)}</span>` : ""}
+          </div>
+          <div class="tweet-text">${esc(short)}</div>
+          <div class="meta review-actions" data-signal-id="${item.signal_id}">
+            <button type="button" data-action="BUY">Confirm BUY</button>
+            <button type="button" data-action="SELL">Confirm SELL</button>
+          </div>`;
+        feed.appendChild(li);
+      }
+      feed.querySelectorAll(".review-actions button[data-action]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const signalId = btn.closest(".review-actions").dataset.signalId;
+          try {
+            await submitReviewLabel(signalId, btn.dataset.action);
+          } catch (err) {
+            document.getElementById("errorBanner").style.display = "block";
+            document.getElementById("errorBanner").textContent = String(err.message || err);
+          }
+        });
+      });
+    }
+
     function renderDigest(digest) {
       const body = document.getElementById("digestBody");
       const empty = document.getElementById("digestEmpty");
@@ -1398,7 +1468,7 @@
       applyRefreshIntervals(data.health);
       syncActiveManagerFromData(data);
       renderActivity(dashboardState);
-      await Promise.all([loadTweets(), loadTrades()]);
+      await Promise.all([loadTweets(), loadTrades(), loadReviewQueue()]);
       activityCountdown = Math.round(ACTIVITY_MS / 1000);
       return data;
     }

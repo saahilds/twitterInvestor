@@ -35,6 +35,8 @@ class TradeSignal(BaseModel):
     sell_sizing_explicit: bool = False
     buy_conviction: BuyConviction | None = None
     watch_conviction: WatchConviction | None = None
+    needs_review: bool = False
+    review_reason: str | None = None
 
 
 class RiskCheckResult(BaseModel):
@@ -180,6 +182,33 @@ class ParserFeedbackRead(BaseModel):
     note: str | None
     created_at: datetime
     exported_at: datetime | None
+
+
+class ReviewQueueItem(BaseModel):
+    signal_id: int
+    tweet_id: str
+    tweet_text: str
+    ticker: str | None
+    action: SignalAction
+    confidence: float
+    review_reason: str | None
+    posted_at: datetime | None
+    created_at: datetime
+    manager_id: str
+
+
+class ReviewQueueLabelCreate(BaseModel):
+    action: SignalAction
+    labeled_by: str = "dashboard"
+
+
+class ReviewQueueLabelRead(BaseModel):
+    signal_id: int
+    tweet_id: str
+    ticker: str | None
+    action: SignalAction
+    needs_review: bool
+    label_id: int
 
 
 class DailyDigestRead(BaseModel):

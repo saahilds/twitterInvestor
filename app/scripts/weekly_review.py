@@ -37,8 +37,12 @@ def _flag_reasons(
     ml_min_margin: float,
     segment_count: int,
     has_trade_verbs: bool,
+    needs_review: bool = False,
+    review_reason: str | None = None,
 ) -> list[str]:
     reasons: list[str] = []
+    if needs_review or review_reason == "trade_header_low_conf":
+        reasons.append(review_reason or "trade_header_low_conf")
     if rule_action != model_action and model_action != SignalAction.IGNORE:
         reasons.append(f"conflict rule={rule_action.value} ml={model_action.value}")
     if rule_action != SignalAction.IGNORE and model_action != rule_action and ml_confidence > 0.4:
@@ -64,6 +68,12 @@ _TRADE_VERBS = (
     "bought",
     "entered",
     "closed",
+    "upsized",
+    "upsize",
+    "upsizing",
+    "downsized",
+    "downsize",
+    "downsizing",
 )
 
 
@@ -115,6 +125,8 @@ def main() -> None:
                     "segment_text": text,
                     "model_action": signals[0].action.value,
                     "model_confidence": signals[0].confidence,
+                    "needs_review": signals[0].needs_review,
+                    "review_reason": signals[0].review_reason,
                 }
             ]
         else:
@@ -126,6 +138,8 @@ def main() -> None:
                         "segment_text": segment.local_text,
                         "model_action": signal.action.value,
                         "model_confidence": signal.confidence,
+                        "needs_review": signal.needs_review,
+                        "review_reason": signal.review_reason,
                     }
                 )
             # Zip can truncate if lengths differ — fall back to parse results.
@@ -136,6 +150,8 @@ def main() -> None:
                         "segment_text": signal.raw_text,
                         "model_action": signal.action.value,
                         "model_confidence": signal.confidence,
+                        "needs_review": signal.needs_review,
+                        "review_reason": signal.review_reason,
                     }
                     for signal in signals
                 ]
@@ -155,6 +171,8 @@ def main() -> None:
                 ml_min_margin=settings.signal_ml_min_margin,
                 segment_count=max(len(segments), 1),
                 has_trade_verbs=has_trade_verbs,
+                needs_review=bool(payload.get("needs_review")),
+                review_reason=payload.get("review_reason"),
             )
             if not reasons and payload["model_action"] != SignalAction.IGNORE.value:
                 # Clear actionable high-confidence signal — skip review.

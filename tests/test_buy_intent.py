@@ -19,6 +19,7 @@ def test_accepts_explicit_buy_alerts() -> None:
     assert is_affirmative_buy_intent("i just entered $ADEA at a 5% weight")
     assert is_affirmative_buy_intent("took the position in $AAOI")
     assert is_affirmative_buy_intent("Added 2% port in $RDDT for a swing")
+    assert is_affirmative_buy_intent("Upsized $INTC to a 6% position.")
 
 
 def test_accepts_buy_even_if_price_reaction_also_mentioned() -> None:

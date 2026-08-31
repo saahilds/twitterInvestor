@@ -105,6 +105,28 @@ class ActionClassifier:
             margin=float(top_prob - second_prob),
         )
 
+    def predict_buy_sell(self, text: str) -> ActionPrediction:
+        """Argmax over BUY vs SELL only (never IGNORE/WATCH)."""
+        normalized = normalize_for_action_model(text)
+        probabilities = self._pipeline.predict_proba([normalized])[0]
+        classes = list(self._pipeline.classes_)
+        trade_only = [
+            (label, float(prob))
+            for label, prob in zip(classes, probabilities)
+            if label in {SignalAction.BUY.value, SignalAction.SELL.value}
+        ]
+        if not trade_only:
+            # Model trained without BUY/SELL — fall back to full predict.
+            return self.predict(text)
+        ranked = sorted(trade_only, key=lambda item: item[1], reverse=True)
+        top_label, top_prob = ranked[0]
+        second_prob = ranked[1][1] if len(ranked) > 1 else 0.0
+        return ActionPrediction(
+            action=SignalAction(top_label),
+            confidence=top_prob,
+            margin=float(top_prob - second_prob),
+        )
+
     def save(self, path: Path | None = None) -> Path:
         model_dir = path.parent if path is not None else DEFAULT_MODEL_DIR
         model_dir.mkdir(parents=True, exist_ok=True)

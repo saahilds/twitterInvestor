@@ -120,6 +120,8 @@ class AccountManager:
                     signal.watch_conviction.value if signal.watch_conviction is not None else None
                 ),
                 target_portfolio_pct=signal.target_portfolio_pct,
+                needs_review=signal.needs_review,
+                review_reason=signal.review_reason,
                 manager_id=self.id,
             )
             db.add(parsed_signal)
@@ -363,6 +365,8 @@ class AccountManager:
                 suggested_trade_usd=0.0,
                 rejection_reason=None,
                 watch_conviction=signal.watch_conviction.value,
+                needs_review=False,
+                review_reason=None,
                 manager_id=self.id,
             )
             db.add(parsed_signal)

@@ -72,6 +72,8 @@ class ParsedSignal(Base):
     rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     watch_conviction: Mapped[str | None] = mapped_column(String(32), nullable=True)
     target_portfolio_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    review_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manager_id: Mapped[str] = mapped_column(String(32), index=True, default="individual")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 

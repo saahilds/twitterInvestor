@@ -38,4 +38,5 @@ def build_signal_parser(settings: Settings) -> RuleBasedSignalParser | HybridSig
         action_classifier=classifier,
         ml_min_confidence=settings.signal_ml_min_confidence,
         ml_min_margin=settings.signal_ml_min_margin,
+        trade_header_review_confidence=settings.signal_trade_header_review_confidence,
     )

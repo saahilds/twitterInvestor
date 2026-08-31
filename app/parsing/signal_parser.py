@@ -44,6 +44,9 @@ class RuleBasedSignalParser:
             "add": 2,
             "% port": 4,
             "port in": 3,
+            "upsized": 3,
+            "upsizing": 3,
+            "upsize": 3,
         }
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
@@ -54,6 +57,9 @@ class RuleBasedSignalParser:
             "close": 4,
             "taking profit": 2,
             "reduce": 2,
+            "downsized": 3,
+            "downsizing": 3,
+            "downsize": 3,
         }
 
     def parse(

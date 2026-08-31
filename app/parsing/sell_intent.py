@@ -65,6 +65,9 @@ _AFFIRMATIVE_SELL = (
     r"\breduce\b",
     r"\bended up trimming\b",
     r"\bfreeing up some cash\b",
+    r"\bdownsized\b",
+    r"\bdownsize\b",
+    r"\bdownsizing\b",
 )
 
 # Recounting a past round-trip — not a live sell alert.

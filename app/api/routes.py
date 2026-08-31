@@ -24,6 +24,7 @@ from app.models.db_models import (
     SignalAction,
     Trade,
     Tweet,
+    TweetLabel,
     WatchlistEntry,
     utc_now,
 )
@@ -39,6 +40,9 @@ from app.models.schemas import (
     ParsedSignalRead,
     ParserFeedbackCreate,
     ParserFeedbackRead,
+    ReviewQueueItem,
+    ReviewQueueLabelCreate,
+    ReviewQueueLabelRead,
     RobinhoodReauthStatusResponse,
     PortfolioChartResponse,
     PortfolioChartSummary,
@@ -624,6 +628,110 @@ def create_router(
                 select(ParserFeedback).order_by(ParserFeedback.created_at.desc()).limit(limit)
             ).scalars().all()
         return [ParserFeedbackRead.model_validate(row) for row in rows]
+
+    @router.get("/dashboard/review-queue", response_model=list[ReviewQueueItem])
+    async def dashboard_review_queue(
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> list[ReviewQueueItem]:
+        with session_factory() as db:
+            signals = (
+                db.execute(
+                    select(ParsedSignal)
+                    .options(selectinload(ParsedSignal.tweet))
+                    .where(ParsedSignal.needs_review.is_(True))
+                    .order_by(ParsedSignal.created_at.desc())
+                    .limit(limit * 3)
+                )
+                .scalars()
+                .all()
+            )
+            items: list[ReviewQueueItem] = []
+            for signal in signals:
+                label_stmt = select(TweetLabel).where(TweetLabel.tweet_id == signal.source_tweet_id)
+                if signal.ticker:
+                    label_stmt = label_stmt.where(TweetLabel.ticker == signal.ticker)
+                existing_label = db.execute(label_stmt.limit(1)).scalar_one_or_none()
+                if existing_label is not None:
+                    continue
+                tweet = signal.tweet
+                items.append(
+                    ReviewQueueItem(
+                        signal_id=signal.id,
+                        tweet_id=signal.source_tweet_id,
+                        tweet_text=tweet.text if tweet is not None else signal.raw_text,
+                        ticker=signal.ticker,
+                        action=signal.action,
+                        confidence=signal.confidence,
+                        review_reason=signal.review_reason,
+                        posted_at=tweet.posted_at if tweet is not None else None,
+                        created_at=signal.created_at,
+                        manager_id=signal.manager_id,
+                    )
+                )
+                if len(items) >= limit:
+                    break
+        return items
+
+    @router.post(
+        "/dashboard/review-queue/{signal_id}/label",
+        response_model=ReviewQueueLabelRead,
+    )
+    async def label_review_queue_item(
+        signal_id: int,
+        body: ReviewQueueLabelCreate,
+    ) -> ReviewQueueLabelRead:
+        if body.action not in {SignalAction.BUY, SignalAction.SELL}:
+            raise HTTPException(status_code=422, detail="action_must_be_buy_or_sell")
+        with session_factory() as db:
+            signal = db.execute(
+                select(ParsedSignal)
+                .options(selectinload(ParsedSignal.tweet))
+                .where(ParsedSignal.id == signal_id)
+            ).scalar_one_or_none()
+            if signal is None:
+                raise HTTPException(status_code=404, detail="signal_not_found")
+            tweet_text = signal.tweet.text if signal.tweet is not None else signal.raw_text
+            label = TweetLabel(
+                tweet_id=signal.source_tweet_id,
+                ticker=signal.ticker,
+                action=body.action,
+                segment_text=signal.raw_text or tweet_text,
+                labeled_by=body.labeled_by,
+            )
+            db.add(label)
+            signal.needs_review = False
+            signal.review_reason = None
+            db.commit()
+            db.refresh(label)
+            return ReviewQueueLabelRead(
+                signal_id=signal.id,
+                tweet_id=signal.source_tweet_id,
+                ticker=signal.ticker,
+                action=body.action,
+                needs_review=signal.needs_review,
+                label_id=label.id,
+            )
+
+    @router.delete("/dashboard/review-queue/{signal_id}/label")
+    async def undo_review_queue_label(signal_id: int) -> dict:
+        with session_factory() as db:
+            signal = db.execute(
+                select(ParsedSignal).where(ParsedSignal.id == signal_id)
+            ).scalar_one_or_none()
+            if signal is None:
+                raise HTTPException(status_code=404, detail="signal_not_found")
+            label_stmt = select(TweetLabel).where(TweetLabel.tweet_id == signal.source_tweet_id)
+            if signal.ticker:
+                label_stmt = label_stmt.where(TweetLabel.ticker == signal.ticker)
+            labels = db.execute(label_stmt.order_by(TweetLabel.created_at.desc())).scalars().all()
+            if not labels:
+                raise HTTPException(status_code=404, detail="label_not_found")
+            for label in labels:
+                db.delete(label)
+            signal.needs_review = True
+            signal.review_reason = signal.review_reason or "trade_header_low_conf"
+            db.commit()
+        return {"ok": True, "signal_id": signal_id}
 
     @router.post("/parser/feedback", response_model=ParserFeedbackRead)
     async def create_parser_feedback(body: ParserFeedbackCreate) -> ParserFeedbackRead:

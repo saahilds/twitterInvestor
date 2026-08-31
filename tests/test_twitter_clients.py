@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from app.ingestion.clients import _as_utc, _extract_status_id, _parse_x_datetime, _rows_to_tweets
+from app.ingestion.clients import (
+    _as_utc,
+    _extract_status_id,
+    _is_retryable_navigation_error,
+    _parse_x_datetime,
+    _rows_to_tweets,
+)
 
 
 def test_extract_status_id() -> None:
@@ -52,3 +58,11 @@ def test_as_utc_adds_timezone_to_naive_datetime() -> None:
     naive = datetime(2026, 1, 1, 9, 30, 0)
     converted = _as_utc(naive)
     assert converted.tzinfo is not None
+
+
+def test_is_retryable_navigation_error() -> None:
+    assert _is_retryable_navigation_error(
+        Exception('Page.goto: net::ERR_HTTP_RESPONSE_CODE_FAILURE at https://x.com/CKCapitalxx')
+    )
+    assert _is_retryable_navigation_error(Exception("net::ERR_CONNECTION_RESET"))
+    assert not _is_retryable_navigation_error(Exception("selector not found"))

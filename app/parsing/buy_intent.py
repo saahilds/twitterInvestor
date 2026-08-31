@@ -71,6 +71,9 @@ _AFFIRMATIVE_BUY = (
     r"%\s*weight\b",
     r"\bgot back into\b",
     r"\bhad to take a position\b",
+    r"\bupsized\b",
+    r"\bupsize\b",
+    r"\bupsizing\b",
 )
 
 

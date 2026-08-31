@@ -41,3 +41,8 @@ def test_rejects_future_tense_trim() -> None:
 
 def test_accepts_trimmed() -> None:
     assert is_affirmative_sell_intent("trimmed META today")
+
+
+def test_accepts_downsized() -> None:
+    assert is_affirmative_sell_intent("Downsized $NVDA after the run.")
+    assert is_affirmative_sell_intent("downsizing $AMD today")
