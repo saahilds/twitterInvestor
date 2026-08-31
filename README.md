@@ -434,6 +434,8 @@ Run the bot on your Mac daily without leaving it on 24/7: **[docs/LOCAL_MAC.md](
 
 For production on Hetzner CX32 (extended hours, morning backfill, Caddy HTTPS dashboard): **[docs/VPS.md](docs/VPS.md)**.
 
+For a **home Windows 10 PC** as the 24/7 runner (WSL2 + uv, Tailscale dashboard): **[docs/HOME_RUNNER.md](docs/HOME_RUNNER.md)**.
+
 Quick start on the server:
 
 ```bash

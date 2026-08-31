@@ -1,17 +1,43 @@
 #!/usr/bin/env bash
 # Morning routine: backfill tweets since last cursor, then resume worker.
-# Intended cron: Mon–Fri 7:00 AM America/New_York (see docs/VPS.md).
+# Intended cron: Mon–Fri 7:00 AM America/New_York (see docs/VPS.md, docs/HOME_RUNNER.md).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-DB="${ROOT}/data/trading_bot.db"
 API="${BOT_API_URL:-http://127.0.0.1:8000}"
 
-if ! docker compose ps --status running --services 2>/dev/null | grep -qx bot; then
-  echo "bot container not running; starting..."
-  "${ROOT}/scripts/start_bot.sh"
+# shellcheck source=runner/_common.sh
+source "${ROOT}/scripts/runner/_common.sh"
+
+DB="$(runner_db_path)"
+
+ensure_bot_running() {
+  if runner_docker_bot_running; then
+    return 0
+  fi
+  if runner_api_healthy; then
+    return 0
+  fi
+  if runner_uv_pid >/dev/null; then
+    sleep 5
+    if runner_api_healthy; then
+      return 0
+    fi
+  fi
+  if command -v docker >/dev/null 2>&1 && [[ -f "${ROOT}/docker-compose.yml" ]]; then
+    if ! runner_docker_bot_running; then
+      echo "docker bot not running; starting..."
+      "${ROOT}/scripts/start_bot.sh"
+      sleep 15
+      return 0
+    fi
+  fi
+  echo "uv runner not running; starting..."
+  "${ROOT}/scripts/runner/start.sh"
   sleep 15
-fi
+}
+
+ensure_bot_running
 
 SINCE="$(python3 - "$DB" <<'PY'
 import sys
@@ -61,7 +87,12 @@ PY
 )"
 
 echo "backfill since ${SINCE}"
-docker compose exec -T bot uv run python -m app.cli.backfill --since "${SINCE}"
+
+if runner_docker_bot_running; then
+  docker compose exec -T bot uv run python -m app.cli.backfill --since "${SINCE}"
+else
+  uv run python -m app.cli.backfill --since "${SINCE}"
+fi
 
 curl -sf -X POST "${API}/resume" >/dev/null
 echo "worker resumed at $(date -Is)"
