@@ -13,6 +13,13 @@ TRIM_HEADER = "🚨Trade🚨 Trimmed $META after the run."
 DOWNSIZE_HEADER = "🚨Trade🚨 Downsized $NVDA after the run."
 DOWNSIZE_NO_HEADER = "Downsized $AMD today."
 MULTI_HEADER = "🚨Trade🚨\nUpsized $INTC to a 6% position.\nAlso trimmed $META."
+CUTTING_MULTI = (
+    "🚨Trade🚨\n\nHey guys,\n\nCutting \n$ASTS\n and $KRKNF here.\n\n"
+    "Sticking to my plan and freeing up cash."
+)
+CUTTING_MULTI_NO_HEADER = (
+    "Cutting $ASTS and $KRKNF here.\n\nSticking to my plan and freeing up cash."
+)
 
 
 def _one(signals):
@@ -124,3 +131,23 @@ def test_multi_ticker_header_one_action_per_ticker() -> None:
     assert by_ticker["INTC"].portfolio_allocation_pct == 6.0
     assert by_ticker["INTC"].needs_review is False
     assert by_ticker["META"].needs_review is False
+
+
+def test_cutting_multi_ticker_trade_header_is_sell_both() -> None:
+    parser = HybridSignalParser(known_tickers=["ASTS", "KRKNF"])
+    signals = parser.parse(CUTTING_MULTI, source_tweet_id="cut-multi-1")
+    by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
+    assert set(by_ticker) == {"ASTS", "KRKNF"}
+    assert by_ticker["ASTS"].action == SignalAction.SELL
+    assert by_ticker["KRKNF"].action == SignalAction.SELL
+    assert by_ticker["ASTS"].needs_review is False
+    assert by_ticker["KRKNF"].needs_review is False
+
+
+def test_cutting_multi_ticker_without_header_is_sell_both() -> None:
+    parser = HybridSignalParser(known_tickers=["ASTS", "KRKNF"])
+    signals = parser.parse(CUTTING_MULTI_NO_HEADER, source_tweet_id="cut-multi-2")
+    by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
+    assert set(by_ticker) == {"ASTS", "KRKNF"}
+    assert by_ticker["ASTS"].action == SignalAction.SELL
+    assert by_ticker["KRKNF"].action == SignalAction.SELL

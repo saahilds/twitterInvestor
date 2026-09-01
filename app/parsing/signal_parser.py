@@ -51,6 +51,8 @@ class RuleBasedSignalParser:
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
             "trimmed": 3,
+            "cutting": 3,
+            "cut": 3,
             "sell": 3,
             "sold": 3,
             "closed": 4,

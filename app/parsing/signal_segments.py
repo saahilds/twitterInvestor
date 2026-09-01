@@ -13,6 +13,7 @@ _ACTION_BOUNDARY = re.compile(
     r"(?:"
     r"adding|added|add\b|buying|bought|buy\b|"
     r"trimming|trimmed|trim\b|"
+    r"cutting|cut\b|"
     r"selling|sold|sell\b|"
     r"closing|closed|close\b|"
     r"entered|entering|opened|opening|"

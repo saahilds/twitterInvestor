@@ -46,3 +46,11 @@ def test_accepts_trimmed() -> None:
 def test_accepts_downsized() -> None:
     assert is_affirmative_sell_intent("Downsized $NVDA after the run.")
     assert is_affirmative_sell_intent("downsizing $AMD today")
+
+
+def test_accepts_cutting() -> None:
+    assert is_affirmative_sell_intent("Cutting $ASTS and $KRKNF here.")
+
+
+def test_accepts_freeing_up_cash() -> None:
+    assert is_affirmative_sell_intent("Sticking to my plan and freeing up cash.")

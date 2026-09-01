@@ -61,11 +61,68 @@ class HybridSignalParser:
                 extra_known_tickers=extra_known_tickers,
             )
 
+        shared_action = self._infer_shared_tweet_action(raw_text, segments)
         signals = [
-            self._classify_segment(segment, source_tweet_id, force_trade=force_trade)
+            self._classify_segment(
+                segment,
+                source_tweet_id,
+                force_trade=force_trade,
+                shared_action=shared_action,
+                tweet_text=raw_text if shared_action is not None else None,
+            )
             for segment in segments
         ]
         return RuleBasedSignalParser._dedupe_signals(signals)
+
+    def _infer_shared_tweet_action(
+        self,
+        raw_text: str,
+        segments: list[SignalSegment],
+    ) -> SignalAction | None:
+        """When one buy/sell phrase governs multiple tickers, reuse it for every segment."""
+        if len(segments) <= 1:
+            return None
+
+        normalized = raw_text.lower()
+        buy_score = RuleBasedSignalParser._score(normalized, self._rules.buy_keywords)
+        sell_score = RuleBasedSignalParser._score(normalized, self._rules.sell_keywords)
+
+        segment_keyword_actions: list[SignalAction] = []
+        for segment in segments:
+            local = segment.local_text.lower()
+            local_buy = RuleBasedSignalParser._score(local, self._rules.buy_keywords)
+            local_sell = RuleBasedSignalParser._score(local, self._rules.sell_keywords)
+            if local_buy > local_sell and local_buy > 0:
+                segment_keyword_actions.append(SignalAction.BUY)
+            elif local_sell > local_buy and local_sell > 0:
+                segment_keyword_actions.append(SignalAction.SELL)
+
+        if len(set(segment_keyword_actions)) > 1:
+            return None
+
+        if (
+            sell_score > buy_score
+            and sell_score > 0
+            and is_affirmative_sell_intent(raw_text)
+            and SignalAction.BUY not in segment_keyword_actions
+        ):
+            return SignalAction.SELL
+        if (
+            buy_score > sell_score
+            and buy_score > 0
+            and is_affirmative_buy_intent(raw_text)
+            and SignalAction.SELL not in segment_keyword_actions
+        ):
+            return SignalAction.BUY
+
+        affirmative_sell = is_affirmative_sell_intent(raw_text)
+        affirmative_buy = is_affirmative_buy_intent(raw_text)
+        if affirmative_sell and not affirmative_buy and SignalAction.BUY not in segment_keyword_actions:
+            return SignalAction.SELL
+        if affirmative_buy and not affirmative_sell and SignalAction.SELL not in segment_keyword_actions:
+            return SignalAction.BUY
+
+        return None
 
     def _classify_segment(
         self,
@@ -73,7 +130,25 @@ class HybridSignalParser:
         source_tweet_id: str,
         *,
         force_trade: bool = False,
+        shared_action: SignalAction | None = None,
+        tweet_text: str | None = None,
     ) -> TradeSignal:
+        if shared_action is not None:
+            context = (tweet_text or segment.local_text).lower()
+            keywords = (
+                self._rules.sell_keywords
+                if shared_action == SignalAction.SELL
+                else self._rules.buy_keywords
+            )
+            score = max(RuleBasedSignalParser._score(context, keywords), 3)
+            return self._build_sized_signal(
+                raw_text=tweet_text or segment.local_text,
+                source_tweet_id=source_tweet_id,
+                ticker=segment.ticker,
+                action=shared_action,
+                score=score,
+            )
+
         if force_trade:
             return self._force_trade_segment(segment, source_tweet_id)
 
