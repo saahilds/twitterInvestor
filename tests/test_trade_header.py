@@ -44,12 +44,11 @@ def test_intc_upsize_with_header_is_buy() -> None:
     assert signal.needs_review is False
 
 
-def test_intc_upsize_without_header_is_buy_via_vocab() -> None:
+def test_intc_upsize_without_header_ignored_below_confidence_floor() -> None:
     parser = HybridSignalParser(known_tickers=["INTC"])
     signal = _one(parser.parse(INTC_UPSIZE_NO_HEADER, source_tweet_id="intc-2"))
-    assert signal.action == SignalAction.BUY
+    assert signal.action == SignalAction.IGNORE
     assert signal.ticker == "INTC"
-    assert signal.portfolio_allocation_pct == 6.0
 
 
 def test_header_trim_is_sell_via_keywords() -> None:
@@ -60,13 +59,13 @@ def test_header_trim_is_sell_via_keywords() -> None:
     assert signal.needs_review is False
 
 
-def test_downsized_with_and_without_header_is_sell() -> None:
+def test_downsized_with_header_is_sell_without_is_ignored() -> None:
     parser = HybridSignalParser(known_tickers=["NVDA", "AMD"])
     with_header = _one(parser.parse(DOWNSIZE_HEADER, source_tweet_id="ds-1"))
     without = _one(parser.parse(DOWNSIZE_NO_HEADER, source_tweet_id="ds-2"))
     assert with_header.action == SignalAction.SELL
     assert with_header.ticker == "NVDA"
-    assert without.action == SignalAction.SELL
+    assert without.action == SignalAction.IGNORE
     assert without.ticker == "AMD"
 
 
@@ -144,10 +143,42 @@ def test_cutting_multi_ticker_trade_header_is_sell_both() -> None:
     assert by_ticker["KRKNF"].needs_review is False
 
 
-def test_cutting_multi_ticker_without_header_is_sell_both() -> None:
+def test_cutting_multi_ticker_without_header_is_ignored() -> None:
     parser = HybridSignalParser(known_tickers=["ASTS", "KRKNF"])
     signals = parser.parse(CUTTING_MULTI_NO_HEADER, source_tweet_id="cut-multi-2")
     by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
-    assert set(by_ticker) == {"ASTS", "KRKNF"}
-    assert by_ticker["ASTS"].action == SignalAction.SELL
-    assert by_ticker["KRKNF"].action == SignalAction.SELL
+    assert by_ticker == {}
+
+
+def test_non_header_high_confidence_ml_still_trades() -> None:
+    classifier = MagicMock()
+    classifier.predict.return_value = ActionPrediction(
+        action=SignalAction.BUY,
+        confidence=0.93,
+        margin=0.4,
+    )
+    parser = HybridSignalParser(
+        known_tickers=["XYZ"],
+        action_classifier=classifier,
+        keyword_clear_score=99,
+        ml_min_confidence=0.9,
+        ml_min_margin=0.05,
+        non_header_min_confidence=0.90,
+    )
+    signal = _one(parser.parse("I bought $XYZ here for the swing", source_tweet_id="hi-conf"))
+    assert signal.action == SignalAction.BUY
+    assert signal.ticker == "XYZ"
+    assert signal.confidence >= 0.90
+
+
+def test_fps_thesis_sold_all_year_is_not_a_sell() -> None:
+    text = (
+        "$FPS\n is up 30% since earnings and it's still one of the best growth stories "
+        "in the market.\n\nRevenue grew 94% last quarter. Bookings grew 375%. Backlog "
+        "grew 256%. They booked $1.5 billion of orders in one quarter, more than they "
+        "sold all year, and the book to bill went up to 3.3x."
+    )
+    parser = HybridSignalParser(known_tickers=["FPS"])
+    signal = _one(parser.parse(text, source_tweet_id="fps-thesis"))
+    assert signal.action == SignalAction.IGNORE
+    assert signal.ticker == "FPS"

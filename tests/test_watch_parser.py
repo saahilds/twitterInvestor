@@ -33,12 +33,24 @@ def test_hybrid_buy_for_swing_port_add() -> None:
     assert signal.portfolio_allocation_pct == 2.0
 
 
-def test_hybrid_preemptive_sell() -> None:
+def test_hybrid_preemptive_sell_without_header_is_ignored() -> None:
     parser = HybridSignalParser(known_tickers=["ASTS"])
     signal = _one(
         parser.parse(
             "$ASTS is cooking. Going to sell before end of day and take losses.",
             source_tweet_id="sell-asts",
+        )
+    )
+    assert signal.action == SignalAction.IGNORE
+    assert signal.ticker == "ASTS"
+
+
+def test_hybrid_preemptive_sell_with_trade_header() -> None:
+    parser = HybridSignalParser(known_tickers=["ASTS"])
+    signal = _one(
+        parser.parse(
+            "Trade\n\n$ASTS is cooking. Going to sell before end of day and take losses.",
+            source_tweet_id="sell-asts-header",
         )
     )
     assert signal.action == SignalAction.SELL

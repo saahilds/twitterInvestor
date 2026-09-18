@@ -4,7 +4,29 @@ from app.parsing.sell_fraction import infer_sell_fraction
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.parsing.signal_segments import segment_trade_units
 
-MULTI_TWEET = """New positions
+MULTI_TWEET = """Trade
+
+New positions
+
+Hey guys,
+
+Adding 2.1% port in 
+$INTC
+
+
+Also adding 3.8% port in 
+$META
+
+
+Trimming 
+$ADEA
+ from 5% to 4%
+
+Digging into margin here so will look to trim somewhere else today.
+
+These are some large cap stocks I like that will outweigh some of the high growth we have."""
+
+MULTI_TWEET_NO_HEADER = """New positions
 
 Hey guys,
 
@@ -69,6 +91,16 @@ def test_multi_signal_intc_meta_adea() -> None:
     assert by_ticker["ADEA"].action == SignalAction.SELL
     assert by_ticker["ADEA"].sell_fraction == 0.2
     assert by_ticker["ADEA"].sell_sizing_explicit is True
+
+
+def test_multi_signal_without_trade_header_gates_weak_trim() -> None:
+    """Strong add language can clear the non-header floor; weak trim cannot."""
+    parser = HybridSignalParser(known_tickers=["INTC", "META", "ADEA"])
+    signals = parser.parse(MULTI_TWEET_NO_HEADER, source_tweet_id="multi-no-header")
+    by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
+    assert set(by_ticker) == {"INTC", "META"}
+    assert by_ticker["INTC"].action == SignalAction.BUY
+    assert by_ticker["META"].action == SignalAction.BUY
 
 
 def test_rules_parser_multi_signal() -> None:

@@ -32,6 +32,7 @@ class HybridSignalParser:
         ml_min_margin: float = 0.08,
         keyword_clear_score: int = 3,
         trade_header_review_confidence: float = 0.5,
+        non_header_min_confidence: float = 0.90,
     ) -> None:
         self._rules = RuleBasedSignalParser(
             known_tickers=known_tickers,
@@ -42,6 +43,7 @@ class HybridSignalParser:
         self._ml_min_margin = ml_min_margin
         self._keyword_clear_score = keyword_clear_score
         self._trade_header_review_confidence = trade_header_review_confidence
+        self._non_header_min_confidence = non_header_min_confidence
 
     def parse(
         self,
@@ -55,11 +57,14 @@ class HybridSignalParser:
         segments = segment_trade_units(raw_text)
         if not segments:
             # Fall back to rule parser (bare ticker / no cashtag cases).
-            return self._rules.parse(
+            signals = self._rules.parse(
                 raw_text,
                 source_tweet_id,
                 extra_known_tickers=extra_known_tickers,
             )
+            if force_trade:
+                return signals
+            return [self._gate_non_header_trade(signal) for signal in signals]
 
         shared_action = self._infer_shared_tweet_action(raw_text, segments)
         signals = [
@@ -141,13 +146,14 @@ class HybridSignalParser:
                 else self._rules.buy_keywords
             )
             score = max(RuleBasedSignalParser._score(context, keywords), 3)
-            return self._build_sized_signal(
+            signal = self._build_sized_signal(
                 raw_text=tweet_text or segment.local_text,
                 source_tweet_id=source_tweet_id,
                 ticker=segment.ticker,
                 action=shared_action,
                 score=score,
             )
+            return signal if force_trade else self._gate_non_header_trade(signal)
 
         if force_trade:
             return self._force_trade_segment(segment, source_tweet_id)
@@ -179,7 +185,7 @@ class HybridSignalParser:
                     reason_score=rule_signal.score,
                     ticker=rule_signal.ticker,
                 )
-            return rule_signal
+            return self._gate_non_header_trade(rule_signal)
 
         ml_prediction = self._classifier.predict(local)
         if self._ml_usable(ml_prediction):
@@ -197,11 +203,13 @@ class HybridSignalParser:
                     reason_score=rule_signal.score,
                     ticker=rule_signal.ticker,
                 )
-            return self._from_ml(
-                raw_text=local,
-                source_tweet_id=source_tweet_id,
-                ticker=segment.ticker,
-                prediction=ml_prediction,
+            return self._gate_non_header_trade(
+                self._from_ml(
+                    raw_text=local,
+                    source_tweet_id=source_tweet_id,
+                    ticker=segment.ticker,
+                    prediction=ml_prediction,
+                )
             )
 
         if rule_signal.action != SignalAction.IGNORE:
@@ -227,7 +235,7 @@ class HybridSignalParser:
                     reason_score=rule_signal.score,
                     ticker=segment.ticker,
                 )
-            return rule_signal
+            return self._gate_non_header_trade(rule_signal)
 
         watch = self._rules._watch_signal(
             local,
@@ -239,6 +247,24 @@ class HybridSignalParser:
             return watch
 
         return rule_signal
+
+    def _gate_non_header_trade(self, signal: TradeSignal) -> TradeSignal:
+        """Without a Trade header, only keep BUY/SELL above the confidence floor."""
+        if signal.action not in {SignalAction.BUY, SignalAction.SELL}:
+            return signal
+        if signal.confidence >= self._non_header_min_confidence:
+            return signal
+        local = signal.raw_text
+        ticker = signal.ticker or ""
+        watch = self._rules._watch_signal(local, signal.source_tweet_id, ticker, signal.score)
+        if watch is not None:
+            return watch
+        return self._rules._ignore_signal(
+            local,
+            signal.source_tweet_id,
+            reason_score=signal.score,
+            ticker=signal.ticker,
+        )
 
     def _force_trade_segment(
         self,

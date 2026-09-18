@@ -22,18 +22,25 @@ def _one(signals):
     return signals[0]
 
 
-def test_hybrid_parses_entered_new_position_as_buy() -> None:
+def test_hybrid_parses_entered_new_position_as_buy_with_trade_header() -> None:
     parser = HybridSignalParser(known_tickers=["ADEA", "AMD"])
-    signals = parser.parse(ADEA_TWEET, source_tweet_id="2062197146837750012")
+    signals = parser.parse("Trade\n\n" + ADEA_TWEET, source_tweet_id="2062197146837750012")
     buys = [s for s in signals if s.action == SignalAction.BUY]
     assert len(buys) == 1
     assert buys[0].ticker == "ADEA"
     assert buys[0].confidence >= 0.5
 
 
+def test_hybrid_ignores_entered_new_position_without_trade_header() -> None:
+    parser = HybridSignalParser(known_tickers=["ADEA", "AMD"])
+    signals = parser.parse(ADEA_TWEET, source_tweet_id="adea-no-header")
+    buys = [s for s in signals if s.action == SignalAction.BUY and s.ticker == "ADEA"]
+    assert buys == []
+
+
 def test_hybrid_still_handles_took_position_and_avoids_sells_off_false_positive() -> None:
     parser = HybridSignalParser(known_tickers=["AAOI", "SPY"])
-    signals = parser.parse(AAOI_TWEET, source_tweet_id="2061442067117543814")
+    signals = parser.parse("Trade\n\n" + AAOI_TWEET, source_tweet_id="2061442067117543814")
     buys = [s for s in signals if s.action == SignalAction.BUY]
     assert len(buys) == 1
     assert buys[0].ticker == "AAOI"
@@ -46,6 +53,7 @@ def test_hybrid_ml_path_sell_sets_fraction() -> None:
         keyword_clear_score=99,  # force ML path for sells with low keyword score
         ml_min_confidence=0.3,
         ml_min_margin=0.01,
+        non_header_min_confidence=0.0,  # exercise ML sizing, not the header gate
     )
     signal = _one(parser.parse("trimmed META today", source_tweet_id="ml-sell-1"))
     assert signal.action == SignalAction.SELL

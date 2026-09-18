@@ -6,7 +6,9 @@ from app.parsing.hybrid_signal_parser import HybridSignalParser
 from app.parsing.ml_action_classifier import ActionClassifier
 from app.parsing.training_examples import load_labeled_examples
 
-MULTI_TWEET = """New positions
+MULTI_TWEET = """Trade
+
+New positions
 
 Hey guys,
 

@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     signal_ml_min_confidence: float = 0.35
     signal_ml_min_margin: float = 0.06
     signal_trade_header_review_confidence: float = 0.5
+    # Without a Trade header, BUY/SELL only if confidence clears this bar.
+    signal_non_header_min_confidence: float = 0.90
     default_sell_fraction: float = 1.0
     min_sell_notional_usd: float = 1.0
     watchlist_stale_days: int = 30
