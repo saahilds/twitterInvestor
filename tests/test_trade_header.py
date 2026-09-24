@@ -182,3 +182,24 @@ def test_fps_thesis_sold_all_year_is_not_a_sell() -> None:
     signal = _one(parser.parse(text, source_tweet_id="fps-thesis"))
     assert signal.action == SignalAction.IGNORE
     assert signal.ticker == "FPS"
+
+
+CRDO_TRIM = """Trade
+
+Hey guys,
+
+Sorry for the late trade but want to de risk with this position again as we added at $169 and it’s now back up.
+
+Trimming 
+$CRDO
+ from 10% to 8% at $193.47.
+"""
+
+
+def test_crdo_trimming_from_to_is_sell_not_buy() -> None:
+    parser = HybridSignalParser(known_tickers=["CRDO"])
+    signal = _one(parser.parse(CRDO_TRIM, source_tweet_id="crdo-trim"))
+    assert signal.action == SignalAction.SELL
+    assert signal.ticker == "CRDO"
+    assert signal.sell_fraction == 0.2
+    assert signal.sell_sizing_explicit is True

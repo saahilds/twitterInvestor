@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.parsing.text_normalize import extract_action_snippet
+from app.parsing.word_forms import word_family_regex
 
 # Price-reaction / market commentary — not the author buying.
 _BUY_COMMENTARY = (
@@ -32,6 +33,17 @@ _BUY_COMMENTARY = (
     r"\bglad i alerted the subs to buy\b",
 )
 
+# Past entry-price recount — not a live buy alert ("we added at $169").
+_BUY_PAST_ENTRY_RECAP = (
+    r"\b(?:we |i )?added at\b",
+    r"\b(?:we |i )?bought at\b",
+    r"\b(?:we |i )?added (?:around|near|above|below)\b",
+    r"\b(?:we |i )?bought (?:around|near|above|below)\b",
+    r"\bentry at\b",
+    r"\bour (?:entry|buy) at\b",
+    r"\bmy (?:entry|buy) at\b",
+)
+
 # Conditional / future / temptation — not an executed buy alert.
 _BUY_HYPOTHETICAL = (
     r"\bmight (?:look to )?add\b",
@@ -54,14 +66,11 @@ _AFFIRMATIVE_BUY = (
     r"\btook position\b",
     r"\bjust entered\b",
     r"\bi just entered\b",
-    r"\bentered\b",
-    r"\bentering\b",
+    word_family_regex("enter"),
     r"\bnew position\b",
     r"\bopened (?:a )?new position\b",
-    r"\badding\b",
-    r"\badded\b",
-    r"\bbought\b",
-    r"\bbuy\b",
+    word_family_regex("add"),
+    word_family_regex("buy"),
     r"\bstarter\b",
     r"\bscaling in\b",
     r"\bscale in\b",
@@ -71,9 +80,7 @@ _AFFIRMATIVE_BUY = (
     r"%\s*weight\b",
     r"\bgot back into\b",
     r"\bhad to take a position\b",
-    r"\bupsized\b",
-    r"\bupsize\b",
-    r"\bupsizing\b",
+    word_family_regex("upsize"),
 )
 
 
@@ -94,6 +101,8 @@ def is_affirmative_buy_intent(text: str) -> bool:
         return _matches_any(_AFFIRMATIVE_BUY, cleaned)
 
     cleaned = snippet
+    for pattern in _BUY_PAST_ENTRY_RECAP:
+        cleaned = re.sub(pattern, " ", cleaned)
     for pattern in _BUY_HYPOTHETICAL:
         cleaned = re.sub(pattern, " ", cleaned)
 

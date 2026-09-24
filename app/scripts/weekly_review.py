@@ -14,6 +14,7 @@ from app.models.db_models import SignalAction
 from app.parsing.hybrid_signal_parser import HybridSignalParser
 from app.parsing.ml_action_classifier import ActionClassifier
 from app.parsing.signal_segments import segment_trade_units
+from app.parsing.trade_header import has_trade_header
 
 REVIEWS_DIR = Path(__file__).resolve().parents[2] / "data" / "reviews"
 
@@ -82,6 +83,11 @@ def main() -> None:
     parser.add_argument("--since", default="7d", help="Lookback window (e.g. 7d, 24h)")
     parser.add_argument("--limit", type=int, default=25, help="Max review rows to emit")
     parser.add_argument(
+        "--trade-header-only",
+        action="store_true",
+        help="Only queue tweets that open with a Trade alert header",
+    )
+    parser.add_argument(
         "--interactive",
         action="store_true",
         help="Prompt for truth_action on each row and write TweetLabel rows",
@@ -116,6 +122,8 @@ def main() -> None:
 
     review_rows: list[dict] = []
     for tweet_id, posted_at, text in rows:
+        if args.trade_header_only and not has_trade_header(text):
+            continue
         segments = segment_trade_units(text) or []
         signals = hybrid.parse(text, tweet_id)
         if not segments and signals:

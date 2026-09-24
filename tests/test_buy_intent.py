@@ -22,6 +22,14 @@ def test_accepts_explicit_buy_alerts() -> None:
     assert is_affirmative_buy_intent("Upsized $INTC to a 6% position.")
 
 
+def test_rejects_past_entry_price_recap_as_buy() -> None:
+    assert not is_affirmative_buy_intent(
+        "want to de risk as we added at $169 and it’s now back up. "
+        "Trimming $CRDO from 10% to 8%."
+    )
+    assert not is_affirmative_buy_intent("we bought at $40, now watching $ASTS")
+
+
 def test_accepts_buy_even_if_price_reaction_also_mentioned() -> None:
     assert is_affirmative_buy_intent("$SPY puked so I added a starter")
 

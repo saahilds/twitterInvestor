@@ -1,5 +1,6 @@
 from app.parsing.sell_fraction import (
     has_explicit_sell_sizing,
+    has_portfolio_weight_reduction,
     infer_sell_fraction,
     infer_target_portfolio_pct,
 )
@@ -22,6 +23,8 @@ def test_infer_from_to_portfolio_weight() -> None:
     assert infer_sell_fraction("Trimming $ADEA from 5% to 4%") == 0.2
     assert infer_target_portfolio_pct("Trimming $ADEA from 5% to 4%") is None
     assert has_explicit_sell_sizing("Trimming $ADEA from 5% to 4%") is True
+    assert has_portfolio_weight_reduction("Trimming $CRDO from 10% to 8%") is True
+    assert has_portfolio_weight_reduction("Upsized $INTC from 4% to 6%") is False
 
 
 def test_infer_down_to_target_weight() -> None:

@@ -16,6 +16,7 @@ from app.parsing.sell_fraction import (
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_segments import SignalSegment, segment_trade_units
 from app.parsing.watch_conviction import WatchConviction, infer_watch_conviction
+from app.parsing.word_forms import keyword_match_pattern
 
 
 class RuleBasedSignalParser:
@@ -31,36 +32,28 @@ class RuleBasedSignalParser:
         self.cashtag_pattern = re.compile(r"\$([A-Za-z]{1,5}(?:\.[A-Za-z])?)\b")
         self.bare_ticker_pattern = re.compile(r"\b([A-Z]{1,5})\b")
 
+        # Base forms only — conjugations (add/added/adding, trim/trimmed/trimming)
+        # are expanded in _score via word_forms.
         self.buy_keywords: dict[str, int] = {
             "took the position": 4,
             "took a position": 4,
             "took position": 4,
-            "adding": 3,
+            "add": 3,
             "starter": 3,
             "buy": 3,
-            "bought": 3,
             "long": 2,
             "scale in": 2,
-            "add": 2,
             "% port": 4,
             "port in": 3,
-            "upsized": 3,
-            "upsizing": 3,
             "upsize": 3,
         }
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
-            "trimmed": 3,
-            "cutting": 3,
             "cut": 3,
             "sell": 3,
-            "sold": 3,
-            "closed": 4,
             "close": 4,
             "taking profit": 2,
             "reduce": 2,
-            "downsized": 3,
-            "downsizing": 3,
             "downsize": 3,
         }
 
@@ -190,8 +183,7 @@ class RuleBasedSignalParser:
     def _score(text: str, keywords: dict[str, int]) -> int:
         score = 0
         for phrase, weight in sorted(keywords.items(), key=lambda item: len(item[0]), reverse=True):
-            pattern = r"\b" + re.escape(phrase) + r"\b"
-            if re.search(pattern, text):
+            if keyword_match_pattern(phrase).search(text):
                 score += weight
         return score
 

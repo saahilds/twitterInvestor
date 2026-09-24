@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.parsing.text_normalize import extract_action_snippet
+from app.parsing.word_forms import word_family_regex
 
 # Third-party / market commentary — not the account owner selling.
 _SELL_COMMENTARY = (
@@ -19,6 +20,13 @@ _SELL_COMMENTARY = (
     r"\bhasn'?t sold\b",
     r"\bhas not sold\b",
     r"\bnot sold\b",
+    # Corporate / thesis stats — not a live sell alert.
+    r"\bthey sold\b",
+    r"\bmore than they sold\b",
+    r"\bsold all year\b",
+    r"\bsold (?:in|during) (?:the |that )?year\b",
+    r"\bbook to bill\b",
+    r"\bbook[- ]to[- ]bill\b",
 )
 
 # Conditional / future tense — not an executed sell alert.
@@ -50,27 +58,22 @@ _AFFIRMATIVE_SELL = (
     r"\bsold the rest\b",
     r"\bsold my\b",
     r"\bsold have\b",
-    r"\bsold\b",
-    r"\btrimmed\b",
-    r"\btrimming\b",
-    r"\btrim\b",
-    r"\bcutting\b",
-    r"\bcut\b",
+    word_family_regex("sell"),
+    word_family_regex("trim"),
+    word_family_regex("cut"),
     r"\bclosed out\b",
-    r"\bclosed\b",
     r"\bclose out\b",
     r"\bclose the\b",
     r"\bclose position\b",
+    # Avoid bare "close" ("close to bottomed out" is not a sell).
+    r"\bclos(?:ed|es|ing)\b",
     r"\btaking profit\b",
     r"\btake profit\b",
-    r"\breduced\b",
-    r"\breduce\b",
+    word_family_regex("reduce"),
     r"\bended up trimming\b",
     r"\bfreeing up some cash\b",
     r"\bfreeing up cash\b",
-    r"\bdownsized\b",
-    r"\bdownsize\b",
-    r"\bdownsizing\b",
+    word_family_regex("downsize"),
 )
 
 # Recounting a past round-trip — not a live sell alert.

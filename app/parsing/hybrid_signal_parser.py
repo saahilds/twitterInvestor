@@ -10,6 +10,7 @@ from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
 from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
 from app.parsing.sell_fraction import (
     has_explicit_sell_sizing,
+    has_portfolio_weight_reduction,
     infer_sell_fraction,
     infer_target_portfolio_pct,
 )
@@ -67,17 +68,69 @@ class HybridSignalParser:
             return [self._gate_non_header_trade(signal) for signal in signals]
 
         shared_action = self._infer_shared_tweet_action(raw_text, segments)
+        # Trade-header multi-ticker: one governing verb/structure applies to all
+        # cashtags when segments are not mixed (e.g. Cutting $A and $B).
+        if force_trade and shared_action is None and len(segments) > 1:
+            if not self._has_mixed_segment_keyword_actions(segments):
+                shared_action = self._infer_structure_first_action(raw_text)
+
         signals = [
             self._classify_segment(
                 segment,
                 source_tweet_id,
                 force_trade=force_trade,
                 shared_action=shared_action,
+                # Full tweet only when one action governs every ticker; mixed
+                # Trade alerts (add + trim) keep per-segment local text.
                 tweet_text=raw_text if shared_action is not None else None,
             )
             for segment in segments
         ]
         return RuleBasedSignalParser._dedupe_signals(signals)
+
+    def _keyword_action(self, text: str) -> SignalAction | None:
+        normalized = text.lower()
+        buy_score = RuleBasedSignalParser._score(normalized, self._rules.buy_keywords)
+        sell_score = RuleBasedSignalParser._score(normalized, self._rules.sell_keywords)
+        if buy_score > sell_score and buy_score > 0:
+            return SignalAction.BUY
+        if sell_score > buy_score and sell_score > 0:
+            return SignalAction.SELL
+        return None
+
+    def _has_mixed_segment_keyword_actions(self, segments: list[SignalSegment]) -> bool:
+        actions = {
+            action
+            for segment in segments
+            if (action := self._keyword_action(segment.local_text)) is not None
+        }
+        return len(actions) > 1
+
+    def _infer_structure_first_action(self, text: str) -> SignalAction | None:
+        """Deterministic Trade-alert action: structure → verb families → intent."""
+        if has_portfolio_weight_reduction(text) or infer_target_portfolio_pct(text) is not None:
+            return SignalAction.SELL
+
+        keyword_action = self._keyword_action(text)
+        if keyword_action is not None:
+            # Past "added at $X" can look like a buy while the live move is a trim.
+            if keyword_action == SignalAction.BUY:
+                sell_score = RuleBasedSignalParser._score(
+                    text.lower(), self._rules.sell_keywords
+                )
+                if sell_score > 0:
+                    return SignalAction.SELL
+            return keyword_action
+
+        sell_intent = is_affirmative_sell_intent(text)
+        buy_intent = is_affirmative_buy_intent(text)
+        if sell_intent and not buy_intent:
+            return SignalAction.SELL
+        if buy_intent and not sell_intent:
+            return SignalAction.BUY
+        if sell_intent and buy_intent:
+            return SignalAction.SELL
+        return None
 
     def _infer_shared_tweet_action(
         self,
@@ -88,44 +141,12 @@ class HybridSignalParser:
         if len(segments) <= 1:
             return None
 
-        normalized = raw_text.lower()
-        buy_score = RuleBasedSignalParser._score(normalized, self._rules.buy_keywords)
-        sell_score = RuleBasedSignalParser._score(normalized, self._rules.sell_keywords)
-
-        segment_keyword_actions: list[SignalAction] = []
-        for segment in segments:
-            local = segment.local_text.lower()
-            local_buy = RuleBasedSignalParser._score(local, self._rules.buy_keywords)
-            local_sell = RuleBasedSignalParser._score(local, self._rules.sell_keywords)
-            if local_buy > local_sell and local_buy > 0:
-                segment_keyword_actions.append(SignalAction.BUY)
-            elif local_sell > local_buy and local_sell > 0:
-                segment_keyword_actions.append(SignalAction.SELL)
-
-        if len(set(segment_keyword_actions)) > 1:
+        if self._has_mixed_segment_keyword_actions(segments):
             return None
 
-        if (
-            sell_score > buy_score
-            and sell_score > 0
-            and is_affirmative_sell_intent(raw_text)
-            and SignalAction.BUY not in segment_keyword_actions
-        ):
-            return SignalAction.SELL
-        if (
-            buy_score > sell_score
-            and buy_score > 0
-            and is_affirmative_buy_intent(raw_text)
-            and SignalAction.SELL not in segment_keyword_actions
-        ):
-            return SignalAction.BUY
-
-        affirmative_sell = is_affirmative_sell_intent(raw_text)
-        affirmative_buy = is_affirmative_buy_intent(raw_text)
-        if affirmative_sell and not affirmative_buy and SignalAction.BUY not in segment_keyword_actions:
-            return SignalAction.SELL
-        if affirmative_buy and not affirmative_sell and SignalAction.SELL not in segment_keyword_actions:
-            return SignalAction.BUY
+        structure = self._infer_structure_first_action(raw_text)
+        if structure is not None:
+            return structure
 
         return None
 
@@ -156,7 +177,11 @@ class HybridSignalParser:
             return signal if force_trade else self._gate_non_header_trade(signal)
 
         if force_trade:
-            return self._force_trade_segment(segment, source_tweet_id)
+            return self._force_trade_segment(
+                segment,
+                source_tweet_id,
+                tweet_text=tweet_text,
+            )
 
         local = segment.local_text
         rule_signal = self._rules._classify_segment(segment, source_tweet_id)
@@ -270,34 +295,36 @@ class HybridSignalParser:
         self,
         segment: SignalSegment,
         source_tweet_id: str,
+        *,
+        tweet_text: str | None = None,
     ) -> TradeSignal:
-        """Under Trade header: keywords first, else ML BUY/SELL only; never IGNORE/WATCH."""
+        """Under Trade header: structure → verbs → intent → ML; never IGNORE/WATCH."""
         local = segment.local_text
-        normalized = local.lower()
-        buy_score = RuleBasedSignalParser._score(normalized, self._rules.buy_keywords)
-        sell_score = RuleBasedSignalParser._score(normalized, self._rules.sell_keywords)
-
-        if buy_score > sell_score and buy_score > 0:
+        # Prefer full-tweet context so multi-ticker tails inherit the governing verb.
+        decision_text = tweet_text or local
+        action = self._infer_structure_first_action(decision_text)
+        if action is not None:
+            score = max(
+                RuleBasedSignalParser._score(
+                    decision_text.lower(),
+                    self._rules.sell_keywords
+                    if action == SignalAction.SELL
+                    else self._rules.buy_keywords,
+                ),
+                3,
+            )
             return self._build_sized_signal(
-                raw_text=local,
+                raw_text=decision_text,
                 source_tweet_id=source_tweet_id,
                 ticker=segment.ticker,
-                action=SignalAction.BUY,
-                score=buy_score,
-            )
-        if sell_score > buy_score and sell_score > 0:
-            return self._build_sized_signal(
-                raw_text=local,
-                source_tweet_id=source_tweet_id,
-                ticker=segment.ticker,
-                action=SignalAction.SELL,
-                score=sell_score,
+                action=action,
+                score=score,
             )
 
-        prediction = self._classifier.predict_buy_sell(local)
+        prediction = self._classifier.predict_buy_sell(decision_text)
         needs_review = prediction.confidence < self._trade_header_review_confidence
         return self._from_ml(
-            raw_text=local,
+            raw_text=decision_text,
             source_tweet_id=source_tweet_id,
             ticker=segment.ticker,
             prediction=prediction,

@@ -29,6 +29,13 @@ def test_rejects_people_sell_commentary() -> None:
     assert not is_affirmative_sell_intent(text)
 
 
+def test_rejects_corporate_thesis_sold_language() -> None:
+    assert not is_affirmative_sell_intent(
+        "$FPS booked more than they sold all year, and the book to bill went up to 3.3x."
+    )
+    assert not is_affirmative_sell_intent("Revenue grew; they sold $1.5B of product last year $FPS")
+
+
 def test_rejects_havent_sold_commentary() -> None:
     text = "For anyone asking about $HLIT. I haven't sold a single share, nothing within the thesis has changed."
     assert not is_affirmative_sell_intent(text)

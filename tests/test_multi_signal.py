@@ -94,9 +94,12 @@ def test_multi_signal_intc_meta_adea() -> None:
 
 
 def test_multi_signal_without_trade_header_gates_weak_trim() -> None:
-    """Strong add language can clear the non-header floor; weak trim cannot."""
+    """Strong add language can clear the non-header floor; a lone trim cannot."""
     parser = HybridSignalParser(known_tickers=["INTC", "META", "ADEA"])
-    signals = parser.parse(MULTI_TWEET_NO_HEADER, source_tweet_id="multi-no-header")
+    signals = parser.parse(
+        "Adding 2.1% port in $INTC\nAlso adding 3.8% port in $META\ntrimmed $ADEA today",
+        source_tweet_id="multi-no-header",
+    )
     by_ticker = {s.ticker: s for s in signals if s.action != SignalAction.IGNORE}
     assert set(by_ticker) == {"INTC", "META"}
     assert by_ticker["INTC"].action == SignalAction.BUY

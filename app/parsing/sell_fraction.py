@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 
 from app.parsing.text_normalize import extract_action_snippet
+from app.parsing.word_forms import keyword_match_pattern
 
 _FROM_TO_WEIGHT = re.compile(
     r"from\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)\s+to\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
     re.IGNORECASE,
 )
 _DOWN_TO_WEIGHT = re.compile(
-    r"(?:down\s+to|trim(?:med|ming)?\s+(?:down\s+)?to|reduce(?:d|s)?\s+to)"
+    r"(?:down\s+to|(?:trim(?:med|ming|s)?|reduc(?:e|es|ed|ing))\s+(?:down\s+)?to)"
     r"\s+(\d+(?:\.\d+)?)\s*(?:%|percent|pct)",
     re.IGNORECASE,
 )
@@ -32,24 +33,29 @@ _WORD_FRACTIONS: tuple[tuple[str, float], ...] = (
     ("half", 0.5),
     ("50%", 0.5),
 )
+# Base forms — conjugations matched via keyword_match_pattern.
 _PHRASE_DEFAULTS: tuple[tuple[str, float], ...] = (
-    ("trimmed", 0.25),
-    ("trimming", 0.25),
     ("trim", 0.25),
     ("reduce", 0.5),
-    ("reduced", 0.5),
     ("taking profit", 0.5),
     ("take profit", 0.5),
     ("closed out", 1.0),
-    ("closed", 1.0),
     ("close out", 1.0),
     ("close", 1.0),
     ("sold all", 1.0),
     ("sell all", 1.0),
     ("out of", 1.0),
-    ("sold", 1.0),
     ("sell", 1.0),
 )
+
+
+def has_portfolio_weight_reduction(text: str) -> bool:
+    """True when the tweet states a lower portfolio weight (from A% to B%, A > B)."""
+    snippet = extract_action_snippet(text)
+    match = _FROM_TO_WEIGHT.search(snippet) or _FROM_TO_WEIGHT.search(text)
+    if match is None:
+        return False
+    return float(match.group(1)) > float(match.group(2)) > 0
 
 
 def infer_target_portfolio_pct(text: str) -> float | None:
@@ -84,19 +90,14 @@ def has_explicit_sell_sizing(text: str) -> bool:
         return True
     full_exit_phrases = (
         "closed out",
-        "closed",
         "close out",
         "close",
         "sold all",
         "sell all",
         "out of",
-        "sold",
         "sell",
     )
-    return any(
-        re.search(r"\b" + re.escape(phrase) + r"\b", snippet)
-        for phrase in full_exit_phrases
-    )
+    return any(keyword_match_pattern(phrase).search(snippet) for phrase in full_exit_phrases)
 
 
 def infer_sell_fraction(text: str, *, default_fraction: float = 1.0) -> float:
@@ -114,8 +115,9 @@ def infer_sell_fraction(text: str, *, default_fraction: float = 1.0) -> float:
     # Target-weight trims are sized in risk; fall through to phrase defaults (e.g. trim→0.25).
     if infer_target_portfolio_pct(text) is not None:
         for phrase, fraction in sorted(_PHRASE_DEFAULTS, key=lambda item: len(item[0]), reverse=True):
-            pattern = r"\b" + re.escape(phrase) + r"\b"
-            if re.search(pattern, snippet) or re.search(pattern, full):
+            if keyword_match_pattern(phrase).search(snippet) or keyword_match_pattern(phrase).search(
+                full
+            ):
                 return fraction
         return min(1.0, max(0.0, default_fraction))
 
@@ -129,8 +131,7 @@ def infer_sell_fraction(text: str, *, default_fraction: float = 1.0) -> float:
             return fraction
 
     for phrase, fraction in sorted(_PHRASE_DEFAULTS, key=lambda item: len(item[0]), reverse=True):
-        pattern = r"\b" + re.escape(phrase) + r"\b"
-        if re.search(pattern, snippet):
+        if keyword_match_pattern(phrase).search(snippet):
             return fraction
 
     return min(1.0, max(0.0, default_fraction))
