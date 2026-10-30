@@ -45,7 +45,9 @@ if [[ -d "$ROOT/data/rh-tokens" ]] && [[ -n "$(ls -A "$ROOT/data/rh-tokens" 2>/d
 fi
 
 WINDOWS_HOST="$(grep -m1 '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' || echo "127.0.0.1")"
-CDP_URL="http://${WINDOWS_HOST}:9222"
+# Prefer LAN CDP URL written by start_chrome.ps1; 172.x gateway is often firewalled.
+CDP_URL="http://${WINDOWS_HOST}:9223"
+echo "Note: after start_chrome.ps1 on Windows, PLAYWRIGHT_CDP_URL is rewritten to a LAN IP (:9223)."
 
 if [[ -f "$ROOT/.env" ]]; then
   python3 - "$ROOT/.env" "$CDP_URL" <<'PY'

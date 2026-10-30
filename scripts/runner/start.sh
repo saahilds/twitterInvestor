@@ -14,10 +14,17 @@ uv sync
 
 CDP_HOST="$(runner_windows_host)"
 if grep -q '^PLAYWRIGHT_CDP_URL=' "$ROOT/.env" 2>/dev/null; then
-  if curl -sf "http://${CDP_HOST}:9222/json/version" >/dev/null 2>&1; then
-    echo "Chrome CDP reachable at http://${CDP_HOST}:9222"
+  # Prefer URL from .env; fall back to relay port 9223 then Chrome 9222.
+  CDP_URL="$(grep -E '^PLAYWRIGHT_CDP_URL=' "$ROOT/.env" | tail -1 | cut -d= -f2- | tr -d '\r')"
+  if [[ -z "$CDP_URL" ]]; then
+    CDP_URL="http://${CDP_HOST}:9223"
+  fi
+  if curl -sf "$CDP_URL/json/version" >/dev/null 2>&1; then
+    echo "Chrome CDP reachable at $CDP_URL"
+  elif curl -sf "http://${CDP_HOST}:9223/json/version" >/dev/null 2>&1; then
+    echo "Chrome CDP relay reachable at http://${CDP_HOST}:9223"
   else
-    echo "warning: Chrome CDP not reachable at http://${CDP_HOST}:9222 — run start_chrome.ps1 on Windows" >&2
+    echo "warning: Chrome CDP not reachable (${CDP_URL}) — run start_chrome.ps1 on Windows" >&2
   fi
 fi
 
