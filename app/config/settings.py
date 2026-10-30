@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     target_account: str = "CKCapitalxx"
     poll_interval_seconds: int = 60
+    # When the trading window is on, skip X fetches outside Mon–Fri 9:30–16:00 ET.
+    poll_only_during_market_hours: bool = True
     dashboard_positions_refresh_seconds: int = 300
     fetch_limit: int = 20
     ignore_replies: bool = True
@@ -34,6 +36,8 @@ class Settings(BaseSettings):
     playwright_cdp_url: str | None = None
     playwright_require_login: bool = True
     playwright_login_timeout_seconds: int = 300
+    # Hard cap on one poll; on expiry the browser connection is dropped and rebuilt.
+    playwright_poll_timeout_seconds: float = 600
     backfill_max_scrolls: int = 150
     backfill_scroll_pause_ms: int = 1500
 
@@ -130,6 +134,12 @@ class Settings(BaseSettings):
     )
     alert_on_worker_errors: bool = True
     alert_cooldown_seconds: int = 60
+    # One alert after this many failed tweet polls in a row, plus one when fetching recovers.
+    x_feed_down_alert_after_failures: int = 5
+    # Dead man's switch (e.g. healthchecks.io): pinged while the bot is healthy; the
+    # service alerts you when pings stop (PC off, internet down, bot hung).
+    heartbeat_ping_url: str | None = None
+    heartbeat_interval_seconds: int = 120
 
     snapshot_enabled: bool = True
     snapshot_interval_seconds: int = 300
@@ -168,7 +178,7 @@ class Settings(BaseSettings):
             return [str(part).strip() for part in value if str(part).strip()]
         raise ValueError("ALERT_REJECTED_REASONS must be a comma-separated string or list")
 
-    @field_validator("alert_webhook_url", mode="before")
+    @field_validator("alert_webhook_url", "heartbeat_ping_url", mode="before")
     @classmethod
     def normalize_alert_webhook_url(cls, value: object) -> str | None:
         if value is None:

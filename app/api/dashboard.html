@@ -477,6 +477,7 @@
         <button type="button" id="pauseBtn">Pause</button>
         <button type="button" id="resumeBtn">Resume</button>
         <button type="button" id="reauthBtn">Refresh RH auth</button>
+        <button type="button" id="restartBtn">Restart bot</button>
         <button type="button" class="primary" id="refreshBtn">Refresh</button>
       </div>
     </header>
@@ -1560,12 +1561,28 @@
       }
 
       const workerBanner = document.getElementById("workerBanner");
+      const workerProblems = [];
       if (data.worker_last_error) {
+        workerProblems.push(`Worker error: ${data.worker_last_error}`);
+      }
+      if (h.x_feed_consecutive_failures > 0) {
+        const lastOk = h.x_feed_last_success_at
+          ? new Date(h.x_feed_last_success_at).toLocaleString()
+          : "not since start";
+        workerProblems.push(
+          `X feed failing (${h.x_feed_consecutive_failures} polls in a row, last success: ${lastOk}): ${h.x_feed_last_error || "unknown error"}`
+        );
+      }
+      if (workerProblems.length) {
         workerBanner.style.display = "block";
-        workerBanner.textContent = `Worker error: ${data.worker_last_error}`;
+        workerBanner.textContent = workerProblems.join(" · ");
       } else {
         workerBanner.style.display = "none";
       }
+      document.getElementById("restartBtn").disabled = !h.restart_supported;
+      document.getElementById("restartBtn").title = h.restart_supported
+        ? "Restart the bot process"
+        : "Remote restart needs the twitter-bot systemd service";
 
       document.getElementById("pauseBtn").disabled = h.worker_paused || !h.worker_running;
       document.getElementById("resumeBtn").disabled = !h.worker_paused;
@@ -1715,6 +1732,38 @@
       } finally {
         document.getElementById("pauseBtn").disabled = false;
         document.getElementById("resumeBtn").disabled = false;
+      }
+    }
+
+    async function restartBot() {
+      if (!confirm("Restart the bot? It will be back in about a minute (longer if Robinhood asks for approval).")) return;
+      const btn = document.getElementById("restartBtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/admin/restart", { method: "POST" });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || `restart ${res.status}`);
+        }
+        setReauthBanner("Restarting bot… this page reloads when it is back.", "info");
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        const deadline = Date.now() + 10 * 60_000;
+        while (Date.now() < deadline) {
+          try {
+            const health = await fetch("/health", { cache: "no-store" });
+            if (health.ok) {
+              location.reload();
+              return;
+            }
+          } catch (_) {
+            // Server is still restarting.
+          }
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+        }
+        setReauthBanner("Bot has not come back after 10 minutes. Check alerts or the PC.", "bad");
+      } catch (err) {
+        setReauthBanner(`Restart failed: ${err.message}`, "bad");
+        btn.disabled = false;
       }
     }
 
@@ -1895,6 +1944,7 @@
     document.getElementById("pauseBtn").addEventListener("click", () => postControl("/pause"));
     document.getElementById("resumeBtn").addEventListener("click", () => postControl("/resume"));
     document.getElementById("reauthBtn").addEventListener("click", () => startRhReauth());
+    document.getElementById("restartBtn").addEventListener("click", () => restartBot());
     document.getElementById("tickerFilter").addEventListener("input", (e) => {
       renderTickerChips(e.target.value);
     });

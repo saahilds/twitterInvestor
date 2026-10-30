@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
-
+import os
 from pathlib import Path
+import signal
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -208,6 +209,10 @@ def create_router(
             robinhood_auth_retry_in_seconds=(
                 session.retry_in_seconds if session is not None and session.last_error else None
             ),
+            x_feed_last_success_at=getattr(orchestrator.ingestion_service, "last_success_at", None),
+            x_feed_consecutive_failures=getattr(orchestrator.ingestion_service, "consecutive_failures", 0),
+            x_feed_last_error=getattr(orchestrator.ingestion_service, "last_error", None),
+            restart_supported=_running_under_systemd(),
             managers=snapshot.managers,
             active_manager=active_manager,
             **_auth_age_fields(),
@@ -842,4 +847,25 @@ def create_router(
             message=f"worker resumed ({label})",
         )
 
+    @router.post("/admin/restart", response_model=WorkerControlResponse)
+    async def restart_bot() -> WorkerControlResponse:
+        # Exiting is only safe when systemd (Restart=always) will start the bot again.
+        if not _running_under_systemd():
+            raise HTTPException(
+                status_code=409,
+                detail="not_running_as_service: start the bot with the twitter-bot systemd service to enable remote restart",
+            )
+        # Delay so this response reaches the client before uvicorn shuts down.
+        asyncio.get_running_loop().call_later(1.0, os.kill, os.getpid(), signal.SIGTERM)
+        snapshot = orchestrator.snapshot()
+        return WorkerControlResponse(
+            running=snapshot.running,
+            paused=snapshot.paused,
+            message="restarting bot",
+        )
+
     return router
+
+
+def _running_under_systemd() -> bool:
+    return bool(os.environ.get("INVOCATION_ID"))

@@ -5,8 +5,19 @@ import json
 import logging
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
+
+# ntfy priorities: 5 = urgent (bypasses Do Not Disturb), 4 = high, 3 = default.
+_NTFY_PRIORITY = {
+    "x_feed_down": "5",
+    "bot_restarted": "4",
+    "worker_error": "4",
+    "robinhood_auth_failed": "5",
+    "robinhood_auth_age": "4",
+    "x_feed_recovered": "3",
+}
 
 
 class AlertService:
@@ -82,18 +93,28 @@ class AlertService:
 
     def _post(self, text: str, payload: dict[str, Any], event_type: str) -> bool:
         assert self.webhook_url is not None
-        body = json.dumps(
-            {
-                "text": text,
-                "content": text,
-                "event_type": event_type,
-                "payload": payload,
+        if is_ntfy_url(self.webhook_url):
+            # ntfy shows the raw request body as the notification text.
+            body = text.encode("utf-8")
+            headers = {
+                "Title": f"Trading bot: {event_type}",
+                "Priority": _NTFY_PRIORITY.get(event_type, "3"),
+                "Tags": "robot",
             }
-        ).encode("utf-8")
+        else:
+            body = json.dumps(
+                {
+                    "text": text,
+                    "content": text,
+                    "event_type": event_type,
+                    "payload": payload,
+                }
+            ).encode("utf-8")
+            headers = {"Content-Type": "application/json"}
         request = urllib.request.Request(
             self.webhook_url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         try:
@@ -105,3 +126,8 @@ class AlertService:
                 extra={"event_type": "alert", "error": str(exc)},
             )
             return False
+
+
+def is_ntfy_url(url: str) -> bool:
+    host = urllib.parse.urlparse(url).hostname or ""
+    return "ntfy" in host.lower()

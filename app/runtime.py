@@ -21,6 +21,7 @@ def build_twitter_client(settings: Settings, logger: logging.Logger) -> TwitterC
         cdp_url=settings.playwright_cdp_url,
         require_login=settings.playwright_require_login,
         login_timeout_seconds=settings.playwright_login_timeout_seconds,
+        poll_timeout_seconds=settings.playwright_poll_timeout_seconds,
         backfill_max_scrolls=settings.backfill_max_scrolls,
         backfill_scroll_pause_ms=settings.backfill_scroll_pause_ms,
         logger=logger,
@@ -41,6 +42,7 @@ def build_ingestion_service(
         ignore_replies=settings.ignore_replies,
         ignore_retweets=settings.ignore_retweets,
         logger=logger,
+        feed_down_after_failures=settings.x_feed_down_alert_after_failures,
     )
 
 

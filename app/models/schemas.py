@@ -140,6 +140,10 @@ class HealthResponse(BaseModel):
     robinhood_auth_refresh_due_at: datetime | None = None
     robinhood_auth_status: str | None = None
     robinhood_reauth_status: str | None = None
+    x_feed_last_success_at: datetime | None = None
+    x_feed_consecutive_failures: int = 0
+    x_feed_last_error: str | None = None
+    restart_supported: bool = False
     managers: list[ManagerStateSnapshot] = Field(default_factory=list)
     active_manager: str | None = None
 

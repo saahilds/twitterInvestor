@@ -43,6 +43,7 @@ class TweetIngestionService:
         ignore_replies: bool,
         ignore_retweets: bool,
         logger: logging.Logger,
+        feed_down_after_failures: int = 5,
     ) -> None:
         self.twitter_client = twitter_client
         self.session_factory = session_factory
@@ -52,6 +53,11 @@ class TweetIngestionService:
         self.ignore_retweets = ignore_retweets
         self.logger = logger
         self.alert_service = None
+        self.feed_down_after_failures = max(1, feed_down_after_failures)
+        self.consecutive_failures = 0
+        self.last_success_at: datetime | None = None
+        self.last_error: str | None = None
+        self._feed_down_alerted = False
 
     async def poll(self) -> list[IngestedTweet]:
         """Fetch account tweets and persist only unseen messages."""
@@ -61,16 +67,51 @@ class TweetIngestionService:
                 limit=self.fetch_limit,
             )
         except Exception as exc:
-            self.logger.exception("tweet_fetch_failed", extra={"error": str(exc)})
-            if self.alert_service is not None:
-                await self.alert_service.send(
-                    "tweet_fetch_failed",
-                    {"error": str(exc)},
-                    key="tweet_fetch_failed",
-                )
+            self.consecutive_failures += 1
+            self.last_error = str(exc)
+            self.logger.exception(
+                "tweet_fetch_failed",
+                extra={"error": str(exc), "consecutive_failures": self.consecutive_failures},
+            )
+            await self._maybe_alert_feed_down()
             return []
+        await self._mark_fetch_succeeded()
         stats = self._persist_payloads(payloads)
         return stats.inserted
+
+    async def _maybe_alert_feed_down(self) -> None:
+        if self._feed_down_alerted or self.consecutive_failures < self.feed_down_after_failures:
+            return
+        if self.alert_service is None:
+            return
+        sent = await self.alert_service.send(
+            "x_feed_down",
+            {
+                "error": self.last_error,
+                "text": (
+                    f"No tweets fetched for {self.consecutive_failures} polls in a row. "
+                    "The bot keeps retrying and the watchdog restarts it if this continues. "
+                    "Check the dashboard or the Chrome window on the PC."
+                ),
+            },
+            key="x_feed_down",
+        )
+        self._feed_down_alerted = sent
+
+    async def _mark_fetch_succeeded(self) -> None:
+        failed_polls = self.consecutive_failures
+        self.consecutive_failures = 0
+        self.last_error = None
+        self.last_success_at = datetime.now(timezone.utc)
+        if not self._feed_down_alerted:
+            return
+        self._feed_down_alerted = False
+        if self.alert_service is not None:
+            await self.alert_service.send(
+                "x_feed_recovered",
+                {"text": f"Fetching tweets again after {failed_polls} failed polls."},
+                key="x_feed_recovered",
+            )
 
     async def backfill_since(
         self,
