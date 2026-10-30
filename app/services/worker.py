@@ -14,6 +14,8 @@ from app.execution.robinhood_auth_age import (
     should_alert_auth_status,
 )
 from app.execution.robinhood_broker import RobinhoodBroker
+from app.ingestion.backfill_lock import backfill_in_progress
+from app.ingestion.host_chrome import quit_bot_chrome, start_bot_chrome
 from app.ingestion.service import TweetIngestionService
 from app.models.db_models import SignalAction
 from app.models.schemas import ManagerStateSnapshot, OrchestratorStateSnapshot
@@ -21,12 +23,15 @@ from app.parsing.factory import SignalParser
 from app.risk.market_hours import (
     DIGEST_CHECKPOINTS,
     digest_date_et,
+    idle_sleep_seconds,
+    should_poll_x_feed,
     to_eastern,
 )
 from app.services.account_manager import AccountManager
 from app.services.alerts import AlertService
 from app.services.audit import ExecutionAuditLogger
 from app.services.daily_digest import DailyDigestService
+from app.services.heartbeat import HeartbeatPinger
 from app.services.portfolio_snapshot import maybe_record_snapshot
 
 
@@ -44,6 +49,7 @@ class BotOrchestrator:
         logger: logging.Logger,
         alert_service: AlertService | None = None,
         digest_service: DailyDigestService | None = None,
+        heartbeat: HeartbeatPinger | None = None,
     ) -> None:
         self.settings = settings
         self.ingestion_service = ingestion_service
@@ -54,6 +60,7 @@ class BotOrchestrator:
         self.logger = logger
         self.alert_service = alert_service
         self.digest_service = digest_service or DailyDigestService(session_factory)
+        self.heartbeat = heartbeat
 
         self._task: asyncio.Task[None] | None = None
         self._running = False
@@ -62,6 +69,8 @@ class BotOrchestrator:
         self._last_error: str | None = None
         self._last_snapshot_at = 0.0
         self._last_digest_rebuild_at = 0.0
+        self._feed_idle: bool | None = None
+        self._host_chrome_stopped = False
 
     def start(self) -> None:
         if self._task and not self._task.done():
@@ -128,18 +137,36 @@ class BotOrchestrator:
             ],
         )
 
+    def _should_poll_feed(self) -> bool:
+        return should_poll_x_feed(
+            trading_window_enabled=self.settings.trading_window_enabled,
+            poll_only_during_market_hours=self.settings.poll_only_during_market_hours,
+        )
+
     async def _run_loop(self) -> None:
         while self._running:
-            if self._paused:
-                await self._run_maintenance(had_activity=False)
-                await asyncio.sleep(1)
+            if self._paused or not self._should_poll_feed():
+                await self._idle_once()
                 continue
+
+            if self._feed_idle is not False:
+                self._host_chrome_stopped = False
+                await self._start_host_chrome()
+                self.logger.info(
+                    "x_feed_active",
+                    extra={"event_type": "x_profile", "reason": "market_hours"},
+                )
+                self._feed_idle = False
 
             try:
                 had_activity = await self._process_iteration()
                 self._iteration_count += 1
                 self._last_error = None
                 await self._run_maintenance(had_activity=had_activity)
+                # Only report healthy when tweets are actually being fetched.
+                # A parked overnight feed still heartbeats from _idle_once.
+                if getattr(self.ingestion_service, "consecutive_failures", 0) == 0:
+                    await self._beat()
             except Exception as exc:
                 self._last_error = str(exc)
                 self.logger.exception("orchestrator_iteration_failed", extra={"error": str(exc)})
@@ -157,6 +184,87 @@ class BotOrchestrator:
                     )
 
             await asyncio.sleep(self.settings.poll_interval_seconds)
+
+    async def _idle_once(self) -> None:
+        """Stay up for heartbeats and the digest, without loading X."""
+        reason = "paused" if self._paused else "outside_market_hours"
+        if self._feed_idle is not True:
+            self.logger.info("x_feed_idle", extra={"event_type": "x_profile", "reason": reason})
+            self._feed_idle = True
+        if backfill_in_progress(self.settings):
+            # The 7 AM backfill starts Chrome under the lock. Quit again once it drops.
+            self._host_chrome_stopped = False
+        elif self._paused and self._should_poll_feed():
+            await self._park_feed()
+        elif not self._host_chrome_stopped:
+            self._host_chrome_stopped = await self._quit_host_chrome()
+        await self._run_maintenance(had_activity=False)
+        await self._beat()
+        await asyncio.sleep(
+            idle_sleep_seconds(
+                poll_interval_seconds=self.settings.poll_interval_seconds,
+                feed_should_poll=False,
+            )
+        )
+
+    async def _start_host_chrome(self) -> None:
+        if not (self.settings.playwright_cdp_url or "").strip():
+            return
+        try:
+            await asyncio.to_thread(start_bot_chrome, self.settings)
+        except Exception as exc:
+            self.logger.warning(
+                "host_chrome_start_failed",
+                extra={"event_type": "x_profile", "error": str(exc)},
+            )
+
+    async def _quit_host_chrome(self) -> bool:
+        """Quit Windows Chrome after the session. Returns True when the process is gone."""
+        if not (self.settings.playwright_cdp_url or "").strip():
+            return False
+        shutdown = getattr(self.ingestion_service.twitter_client, "shutdown_attached_browser", None)
+        if shutdown is not None:
+            try:
+                await shutdown()
+            except Exception as exc:
+                self.logger.warning(
+                    "host_chrome_disconnect_failed",
+                    extra={"event_type": "x_profile", "error": str(exc)},
+                )
+        try:
+            stopped = await asyncio.to_thread(quit_bot_chrome, self.settings)
+        except Exception as exc:
+            self.logger.warning(
+                "host_chrome_quit_failed",
+                extra={"event_type": "x_profile", "error": str(exc)},
+            )
+            return False
+        if stopped:
+            self.logger.info("host_chrome_stopped", extra={"event_type": "x_profile"})
+        return stopped
+
+    async def _park_feed(self) -> None:
+        park = getattr(self.ingestion_service.twitter_client, "park", None)
+        if park is None:
+            return
+        try:
+            await park()
+        except Exception as exc:
+            self.logger.warning(
+                "x_feed_park_failed",
+                extra={"event_type": "x_profile", "error": str(exc)},
+            )
+
+    async def _beat(self) -> None:
+        if self.heartbeat is None:
+            return
+        try:
+            await self.heartbeat.beat()
+        except Exception as exc:
+            self.logger.warning(
+                "heartbeat_failed",
+                extra={"event_type": "heartbeat", "error": str(exc)},
+            )
 
     async def _process_iteration(self) -> bool:
         new_tweets = await self.ingestion_service.poll()

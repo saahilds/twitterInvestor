@@ -22,6 +22,7 @@ from app.services.account_manager import AccountManager
 from app.services.alerts import AlertService
 from app.services.audit import ExecutionAuditLogger
 from app.services.daily_digest import DailyDigestService
+from app.services.heartbeat import HeartbeatPinger
 from app.services.watchlist import WatchlistRegistry
 from app.portfolio.quotes import QuoteProvider
 from app.services.pnl_service import PnlService
@@ -155,6 +156,11 @@ orchestrator = BotOrchestrator(
     logger=logger,
     alert_service=alert_service,
     digest_service=digest_service,
+    heartbeat=HeartbeatPinger(
+        url=settings.heartbeat_ping_url,
+        interval_seconds=settings.heartbeat_interval_seconds,
+        logger=logger,
+    ),
 )
 
 
@@ -182,6 +188,11 @@ async def lifespan(_: FastAPI):
                 )
 
     orchestrator.start()
+    await alert_service.send(
+        "bot_started",
+        {"text": "Bot process started (PC boot, restart, or manual start)."},
+        key="bot_started",
+    )
     yield
     await orchestrator.stop()
     close_method = getattr(twitter_client, "close", None)

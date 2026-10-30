@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol, TypeVar
 
 try:
     from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -19,6 +19,8 @@ except Exception:  # pragma: no cover - runtime environment dependent
     Page = None  # type: ignore[assignment]
     Playwright = None  # type: ignore[assignment]
     async_playwright = None
+
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True)
@@ -77,6 +79,7 @@ class PlaywrightTwitterClient:
         cdp_url: str | None = None,
         require_login: bool = True,
         login_timeout_seconds: int = 300,
+        poll_timeout_seconds: float = 600,
         backfill_max_scrolls: int = 150,
         backfill_scroll_pause_ms: int = 1500,
         logger: logging.Logger | None = None,
@@ -89,6 +92,7 @@ class PlaywrightTwitterClient:
         self.cdp_url = cdp_url.strip() if cdp_url else None
         self.require_login = require_login
         self.login_timeout_seconds = login_timeout_seconds
+        self.poll_timeout_seconds = poll_timeout_seconds
         self.backfill_max_scrolls = backfill_max_scrolls
         self.backfill_scroll_pause_ms = backfill_scroll_pause_ms
         self.logger = logger or logging.getLogger("trading_bot")
@@ -100,15 +104,67 @@ class PlaywrightTwitterClient:
         self._attached_via_cdp = False
         self._login_checked = False
         self._lock = asyncio.Lock()
+        self._heavy_resources_blocked = False
+
+    async def park(self) -> None:
+        """Point the attached tab at about:blank so X's scripts stop running."""
+        if async_playwright is None:
+            return
+        async with self._lock:
+            try:
+                page = await self._ensure_page()
+            except Exception:
+                return
+            try:
+                url = page.url or ""
+            except Exception:
+                url = ""
+            if url.startswith("about:"):
+                return
+            try:
+                await page.goto("about:blank", wait_until="commit", timeout=15_000)
+            except Exception as exc:
+                self.logger.warning(
+                    "x_feed_park_failed",
+                    extra={"event_type": "x_profile", "error": str(exc)},
+                )
+                return
+            self.logger.info("x_feed_parked", extra={"event_type": "x_profile"})
+
+    async def shutdown_attached_browser(self) -> None:
+        """Disconnect from Windows Chrome. The profile process is quit separately."""
+        async with self._lock:
+            if self._browser is None:
+                return
+            await self._drop_connection(reason="host_chrome_shutdown")
 
     async def fetch_recent_tweets(self, account: str, limit: int = 20) -> list[TweetData]:
-        tweets = await self.fetch_tweets_since(
-            account=account,
-            since=datetime(1970, 1, 1, tzinfo=timezone.utc),
-            max_scrolls=0,
-            scroll_pause_ms=0,
-        )
-        return tweets[:limit]
+        # Individual Playwright calls can hang with no timeout when Chrome stops
+        # responding, which would freeze the poll loop indefinitely.
+        budget = self.poll_timeout_seconds
+        if self.require_login and not self._login_checked:
+            budget += self.login_timeout_seconds
+        try:
+            tweets = await asyncio.wait_for(
+                self.fetch_tweets_since(
+                    account=account,
+                    since=datetime(1970, 1, 1, tzinfo=timezone.utc),
+                    max_scrolls=0,
+                    scroll_pause_ms=0,
+                ),
+                timeout=budget,
+            )
+        except asyncio.TimeoutError as exc:
+            async with self._lock:
+                await self._drop_connection(reason="poll_timeout")
+            raise RuntimeError(
+                f"playwright_poll_timeout: Chrome did not respond within {budget:g}s"
+            ) from exc
+        # fetch_tweets_since returns oldest-first. A pinned post on the first screen
+        # must not push the newest tweets out of this slice.
+        if limit <= 0:
+            return []
+        return tweets[-limit:]
 
     async def fetch_tweets_since(
         self,
@@ -124,16 +180,18 @@ class PlaywrightTwitterClient:
         scroll_limit = self.backfill_max_scrolls if max_scrolls is None else max_scrolls
         pause_ms = self.backfill_scroll_pause_ms if scroll_pause_ms is None else scroll_pause_ms
 
-        async with self._lock:
-            page = await self._ensure_page()
+        async def collect(page: Page) -> dict[str, TweetData]:
             await self._ensure_authenticated(page)
             await self._goto_profile(page, account)
-            collected = await self._scroll_collect_tweets(
+            return await self._scroll_collect_tweets(
                 page=page,
                 since_utc=since_utc,
                 max_scrolls=scroll_limit,
                 scroll_pause_ms=pause_ms,
             )
+
+        async with self._lock:
+            collected = await self._run_with_reconnect(collect)
 
         return sorted(
             [tweet for tweet in collected.values() if tweet.posted_at >= since_utc],
@@ -161,8 +219,7 @@ class PlaywrightTwitterClient:
         if start_at > end_at:
             raise ValueError("start_at must be <= end_at")
 
-        async with self._lock:
-            page = await self._ensure_page()
+        async def collect(page: Page) -> dict[str, TweetData]:
             await self._ensure_authenticated(page)
             await self._goto_profile(page, account)
 
@@ -204,6 +261,10 @@ class PlaywrightTwitterClient:
                 if current_height <= previous_height and added == 0:
                     stagnant_cycles += 1
 
+            return collected
+
+        async with self._lock:
+            collected = await self._run_with_reconnect(collect)
             self.logger.info(
                 "playwright_backfill_window_complete",
                 extra={
@@ -222,27 +283,109 @@ class PlaywrightTwitterClient:
                 await self._context.close()
                 self._context = None
                 self._page = None
-            if self._browser is not None:
+            if self._browser is not None and not self._attached_via_cdp:
                 try:
                     await self._browser.close()
                 except Exception:
-                    # Connected CDP browser may be managed externally.
                     pass
-                self._browser = None
+            # A CDP Chrome is the Windows profile that holds the X login.
+            # Disconnect only. The worker quits that process after the close.
+            self._browser = None
             if self._playwright is not None:
                 await self._playwright.stop()
                 self._playwright = None
 
+    async def _run_with_reconnect(
+        self, operation: Callable[[Page], Awaitable[_T]]
+    ) -> _T:
+        """Run ``operation`` on the page, reconnecting once if the browser went away.
+
+        Caller must hold ``self._lock``.
+        """
+        for attempt in (1, 2):
+            try:
+                page = await self._ensure_page()
+                return await operation(page)
+            except Exception as exc:
+                if not _is_browser_gone_error(exc):
+                    raise
+                await self._drop_connection(reason=str(exc))
+                if attempt == 2:
+                    raise
+        raise AssertionError("unreachable")
+
+    async def _drop_connection(self, *, reason: str) -> None:
+        """Forget the current browser so the next fetch reconnects. Caller must hold ``self._lock``."""
+        page_was_open = self._page is not None
+        context, browser, playwright = self._context, self._browser, self._playwright
+        attached_via_cdp = self._attached_via_cdp
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        self._attached_via_cdp = False
+        self._login_checked = False
+        self._heavy_resources_blocked = False
+
+        if page_was_open:
+            self.logger.warning(
+                "playwright_connection_reset",
+                extra={"event_type": "playwright_context", "reason": reason},
+            )
+        # Never close an attached CDP browser: it is the user's logged-in Chrome.
+        if context is not None and not attached_via_cdp:
+            await _quietly(context.close())
+        if browser is not None and not attached_via_cdp:
+            await _quietly(browser.close())
+        if playwright is not None:
+            await _quietly(playwright.stop())
+
     async def _ensure_page(self) -> Page:
         if self._page is not None:
-            return self._page
+            browser_alive = self._browser is None or self._browser.is_connected()
+            if browser_alive and not self._page.is_closed():
+                await self._block_heavy_resources(self._page)
+                return self._page
+            await self._drop_connection(reason="page_or_browser_closed")
 
+        self._page = await self._open_page()
+        await self._block_heavy_resources(self._page)
+        return self._page
+
+    async def _block_heavy_resources(self, page: Page) -> None:
+        """Skip images, video, and fonts. Tweet text does not need them."""
+        if self._heavy_resources_blocked:
+            return
+
+        async def handler(route) -> None:
+            try:
+                if route.request.resource_type in {"image", "media", "font"}:
+                    await route.abort()
+                else:
+                    await route.continue_()
+            except Exception:
+                return
+
+        try:
+            await page.route("**/*", handler)
+        except Exception as exc:
+            self.logger.warning(
+                "x_resource_block_failed",
+                extra={"event_type": "x_profile", "error": str(exc)},
+            )
+            return
+        self._heavy_resources_blocked = True
+
+    async def _open_page(self) -> Page:
         self._playwright = await async_playwright().start()
         if self.cdp_url:
             self._attached_via_cdp = True
             try:
-                self._browser = await self._playwright.chromium.connect_over_cdp(self.cdp_url)
+                self._browser = await self._playwright.chromium.connect_over_cdp(
+                    self.cdp_url, timeout=self.timeout_ms
+                )
             except Exception as exc:
+                await self._drop_connection(reason="cdp_connection_failed")
                 raise RuntimeError(
                     "playwright_cdp_connection_failed: start Chrome with remote debugging "
                     f"or clear PLAYWRIGHT_CDP_URL in .env (tried {self.cdp_url})"
@@ -278,12 +421,11 @@ class PlaywrightTwitterClient:
                 },
             )
 
-        pages = self._context.pages
-        self._page = pages[0] if pages else await self._context.new_page()
-        return self._page
+        pages = [page for page in self._context.pages if not page.is_closed()]
+        return pages[0] if pages else await self._context.new_page()
 
     async def _ensure_authenticated(self, page: Page) -> None:
-        if self._login_checked or not self.require_login:
+        if self._login_checked:
             return
 
         await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=self.timeout_ms)
@@ -295,6 +437,12 @@ class PlaywrightTwitterClient:
                 extra={"event_type": "x_auth"},
             )
             return
+
+        if not self.require_login:
+            raise RuntimeError(
+                "x_login_required: the saved X session is logged out. "
+                "Log in once in the bot Chrome window. That profile is reused after the daily restart."
+            )
 
         if self.headless:
             raise RuntimeError("x_login_required_but_browser_is_headless")
@@ -593,6 +741,27 @@ def _is_retryable_navigation_error(exc: BaseException) -> bool:
         "ns_error_net",
     )
     return any(marker in message for marker in markers)
+
+
+def _is_browser_gone_error(exc: BaseException) -> bool:
+    """True when the page, context, or browser connection no longer exists."""
+    message = str(exc).lower()
+    markers = (
+        "target page, context or browser has been closed",
+        "browser has been closed",
+        "target closed",
+        "browser closed",
+        "connection closed",
+        "browser has disconnected",
+    )
+    return any(marker in message for marker in markers)
+
+
+async def _quietly(awaitable: Awaitable[object], timeout_seconds: float = 10) -> None:
+    try:
+        await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except Exception:
+        pass
 
 
 async def _x_timeline_error_visible(page: Page) -> bool:

@@ -9,6 +9,7 @@ import json
 from app.config.settings import get_settings
 from app.db.init_db import init_db
 from app.db.session import SessionLocal
+from app.ingestion.backfill_lock import hold_backfill_lock
 from app.runtime import build_ingestion_service, build_logger, build_twitter_client
 
 
@@ -38,11 +39,12 @@ async def _run(args: argparse.Namespace) -> int:
 
     since = _parse_since(args.since)
     try:
-        result = await ingestion_service.backfill_since(
-            since=since,
-            max_scrolls=args.max_scrolls,
-            scroll_pause_ms=args.scroll_pause_ms,
-        )
+        with hold_backfill_lock(settings):
+            result = await ingestion_service.backfill_since(
+                since=since,
+                max_scrolls=args.max_scrolls,
+                scroll_pause_ms=args.scroll_pause_ms,
+            )
     finally:
         close_method = getattr(twitter_client, "close", None)
         if callable(close_method):

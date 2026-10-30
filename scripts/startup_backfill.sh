@@ -39,6 +39,14 @@ ensure_bot_running() {
 
 ensure_bot_running
 
+# Hold the lock before starting Chrome so the idle worker does not quit it mid-backfill.
+BACKFILL_LOCK="$(runner_backfill_lock_path)"
+mkdir -p "$(dirname "$BACKFILL_LOCK")"
+echo $$ > "$BACKFILL_LOCK"
+cleanup_backfill_lock() { rm -f "$BACKFILL_LOCK"; }
+trap cleanup_backfill_lock EXIT
+runner_start_host_chrome
+
 SINCE="$(python3 - "$DB" <<'PY'
 import sys
 from datetime import datetime, timedelta, time, timezone

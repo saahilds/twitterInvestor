@@ -104,6 +104,9 @@ class AccountManager:
                 cash_available_usd=cash_available_usd,
                 portfolio_value_usd=portfolio_value_usd,
                 holding=holding,
+                # Use the tweet clock so a catch-up fetch at the open does not
+                # trade posts that were published outside the session.
+                as_of=tweet.posted_at,
             )
             parsed_signal = ParsedSignal(
                 tweet_pk=tweet.tweet_pk,

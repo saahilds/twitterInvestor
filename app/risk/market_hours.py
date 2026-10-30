@@ -80,6 +80,51 @@ def digests_day_bounds_utc(digest_date: str) -> tuple[datetime, datetime]:
     return start, end
 
 
+def should_poll_x_feed(
+    *,
+    trading_window_enabled: bool,
+    poll_only_during_market_hours: bool,
+    moment: datetime | None = None,
+) -> bool:
+    """True when the worker should load X and look for new tweets."""
+    if not trading_window_enabled or not poll_only_during_market_hours:
+        return True
+    return is_within_regular_market_hours(moment)
+
+
+def seconds_until_regular_market_open(moment: datetime | None = None) -> float:
+    """Seconds until the next weekday 9:30 ET. Zero while that session is open."""
+    if moment is None:
+        moment = datetime.now(US_EASTERN)
+    else:
+        moment = to_eastern(moment)
+    if is_within_regular_market_hours(moment):
+        return 0.0
+
+    candidate = datetime.combine(moment.date(), MARKET_OPEN, tzinfo=US_EASTERN)
+    if moment.weekday() >= 5 or moment.time() >= MARKET_OPEN:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return max(0.0, (candidate - moment).total_seconds())
+
+
+def idle_sleep_seconds(
+    *,
+    poll_interval_seconds: int,
+    feed_should_poll: bool,
+    moment: datetime | None = None,
+) -> float:
+    """How long to sleep while the X tab is parked. Wakes at the open if that is sooner."""
+    interval = float(poll_interval_seconds)
+    if feed_should_poll:
+        return interval
+    until_open = seconds_until_regular_market_open(moment)
+    if until_open <= 0:
+        return interval
+    return max(1.0, min(interval, until_open))
+
+
 def is_within_regular_market_hours(moment: datetime | None = None) -> bool:
     """Return True when ``moment`` falls in US equity regular session (Mon–Fri 9:30–16:00 ET)."""
     if moment is None:
