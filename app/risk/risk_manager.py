@@ -73,6 +73,7 @@ class RiskManager:
         portfolio_value_usd: float | None = None,
         holding: BrokerHolding | None = None,
         as_of: datetime | None = None,
+        exclude_parsed_signal_id: int | None = None,
     ) -> RiskCheckResult:
         if signal.action == SignalAction.IGNORE:
             return RiskCheckResult(allowed=False, reason="parser_action_ignore")
@@ -200,16 +201,17 @@ class RiskManager:
             return RiskCheckResult(allowed=False, reason=f"cooldown_active:{ticker}")
 
         duplicate_cutoff = now - timedelta(seconds=self.config.duplicate_window_seconds)
+        duplicate_filters = [
+            ParsedSignal.ticker == ticker,
+            ParsedSignal.action == signal.action,
+            ParsedSignal.manager_id == manager_id,
+            ParsedSignal.created_at >= duplicate_cutoff,
+        ]
+        if exclude_parsed_signal_id is not None:
+            duplicate_filters.append(ParsedSignal.id != exclude_parsed_signal_id)
         duplicate_signal = db.execute(
             select(ParsedSignal)
-            .where(
-                and_(
-                    ParsedSignal.ticker == ticker,
-                    ParsedSignal.action == signal.action,
-                    ParsedSignal.manager_id == manager_id,
-                    ParsedSignal.created_at >= duplicate_cutoff,
-                )
-            )
+            .where(and_(*duplicate_filters))
             .order_by(ParsedSignal.created_at.desc())
             .limit(1)
         ).scalar_one_or_none()

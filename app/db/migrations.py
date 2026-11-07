@@ -166,6 +166,28 @@ def migrate_tweet_labels_table(engine: Engine) -> None:
     TweetLabel.__table__.create(bind=engine)
 
 
+def migrate_parsed_signals_deferred_orders(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "parsed_signals" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("parsed_signals")}
+    additions: list[tuple[str, str]] = [
+        ("portfolio_allocation_pct", "FLOAT"),
+        ("sell_fraction", "FLOAT"),
+        ("sell_sizing_explicit", "BOOLEAN DEFAULT 0"),
+        ("deferred_status", "VARCHAR(32)"),
+        ("deferred_expires_at", "DATETIME"),
+    ]
+    with engine.begin() as connection:
+        for column_name, column_type in additions:
+            if column_name in existing:
+                continue
+            connection.execute(
+                text(f"ALTER TABLE parsed_signals ADD COLUMN {column_name} {column_type}")
+            )
+
+
 def run_migrations(engine: Engine) -> None:
     migrate_trades_table(engine)
     migrate_parsed_signals_table(engine)
@@ -174,3 +196,4 @@ def run_migrations(engine: Engine) -> None:
     migrate_parsed_signals_target_portfolio_pct(engine)
     migrate_parsed_signals_needs_review(engine)
     migrate_tweet_labels_table(engine)
+    migrate_parsed_signals_deferred_orders(engine)

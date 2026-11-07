@@ -17,3 +17,13 @@ def test_infer_starting_position_allocation() -> None:
 def test_infer_adding_decimal_port() -> None:
     assert infer_portfolio_allocation_pct("Adding 2.1% port in $INTC") == 2.1
     assert infer_portfolio_allocation_pct("Also adding 3.8% port in $META") == 3.8
+
+
+def test_infer_with_pct_at_price() -> None:
+    assert infer_portfolio_allocation_pct("Added $NFLX with a 3% position at $67.23") == 3.0
+    assert infer_portfolio_allocation_pct("Added $UBER with 2% at $71.60") == 2.0
+    assert infer_portfolio_allocation_pct("Added \n$HOOD\n 1% at $85.85.") == 1.0
+
+
+def test_infer_ignores_pct_off_highs() -> None:
+    assert infer_portfolio_allocation_pct("$NVDA is 30% off highs") is None

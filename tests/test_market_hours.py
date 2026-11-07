@@ -8,6 +8,8 @@ from app.risk.market_hours import (
     idle_sleep_seconds,
     is_within_extended_chart_hours,
     is_within_regular_market_hours,
+    next_full_session_close_after,
+    next_regular_session_open,
     seconds_until_regular_market_open,
     should_poll_x_feed,
 )
@@ -105,3 +107,17 @@ def test_extended_bounds_span_premarket_to_afterhours() -> None:
     close_et = close_utc.astimezone(ET)
     assert open_et.hour == 7 and open_et.minute == 0
     assert close_et.hour == 20 and close_et.minute == 0
+
+
+def test_next_session_open_and_full_day_close() -> None:
+    premarket = datetime(2026, 5, 20, 8, 0, tzinfo=ET)
+    assert next_regular_session_open(premarket) == datetime(2026, 5, 20, 9, 30, tzinfo=ET)
+    assert next_full_session_close_after(premarket) == datetime(2026, 5, 20, 16, 0, tzinfo=ET)
+
+    after_close = datetime(2026, 5, 20, 17, 0, tzinfo=ET)
+    assert next_regular_session_open(after_close) == datetime(2026, 5, 21, 9, 30, tzinfo=ET)
+    assert next_full_session_close_after(after_close) == datetime(2026, 5, 21, 16, 0, tzinfo=ET)
+
+    friday_night = datetime(2026, 5, 22, 18, 0, tzinfo=ET)
+    assert next_regular_session_open(friday_night) == datetime(2026, 5, 25, 9, 30, tzinfo=ET)
+    assert next_full_session_close_after(friday_night) == datetime(2026, 5, 25, 16, 0, tzinfo=ET)

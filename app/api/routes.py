@@ -199,6 +199,7 @@ def create_router(
             live_trading_enabled=settings.live_trading_enabled,
             order_execution_mode=settings.order_execution_mode,
             trading_window_enabled=settings.trading_window_enabled,
+            defer_outside_market_hours=settings.defer_outside_market_hours,
             within_market_hours=is_within_regular_market_hours(),
             target_account=settings.target_account,
             poll_interval_seconds=settings.poll_interval_seconds,

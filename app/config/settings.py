@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     broker_backend: Literal["robinhood", "mock"] = "robinhood"
     order_execution_mode: Literal["limit_at_ask", "fractional_market"] = "limit_at_ask"
     trading_window_enabled: bool = True
+    # Outside regular hours, queue BUY/SELL for the next open instead of dropping them.
+    # Unreleased queues expire at that session's 4:00 PM ET close (one full market day).
+    # We queue rather than place GTC because limit_at_ask needs a live ask.
+    defer_outside_market_hours: bool = True
     us_symbols_only: bool = True
     max_trades_per_ticker_per_day: int = 1
     daily_limit_counts_simulation: bool = False

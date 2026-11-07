@@ -126,6 +126,7 @@ class HealthResponse(BaseModel):
     live_trading_enabled: bool
     order_execution_mode: str
     trading_window_enabled: bool
+    defer_outside_market_hours: bool = True
     within_market_hours: bool
     target_account: str
     poll_interval_seconds: int = 60
