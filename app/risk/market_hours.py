@@ -101,12 +101,37 @@ def seconds_until_regular_market_open(moment: datetime | None = None) -> float:
     if is_within_regular_market_hours(moment):
         return 0.0
 
+    candidate = next_regular_session_open(moment)
+    return max(0.0, (candidate - moment).total_seconds())
+
+
+def next_regular_session_open(moment: datetime | None = None) -> datetime:
+    """Next Mon–Fri 9:30 ET open at or after ``moment`` (returns current open if in session)."""
+    if moment is None:
+        moment = datetime.now(US_EASTERN)
+    else:
+        moment = to_eastern(moment)
+
+    if is_within_regular_market_hours(moment):
+        return datetime.combine(moment.date(), MARKET_OPEN, tzinfo=US_EASTERN)
+
     candidate = datetime.combine(moment.date(), MARKET_OPEN, tzinfo=US_EASTERN)
     if moment.weekday() >= 5 or moment.time() >= MARKET_OPEN:
         candidate += timedelta(days=1)
     while candidate.weekday() >= 5:
         candidate += timedelta(days=1)
-    return max(0.0, (candidate - moment).total_seconds())
+    return candidate
+
+
+def next_full_session_close_after(moment: datetime | None = None) -> datetime:
+    """4:00 PM ET close of the next regular session that can still execute ``moment``.
+
+    Premarket / open-session signals expire at that same day's close.
+    After-hours / weekend signals expire at the following session's close.
+    """
+    open_et = next_regular_session_open(moment)
+    close_et = datetime.combine(open_et.date(), MARKET_CLOSE, tzinfo=US_EASTERN)
+    return close_et
 
 
 def idle_sleep_seconds(

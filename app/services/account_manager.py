@@ -4,21 +4,33 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.config.account_managers import AccountManagerConfig
 from app.config.settings import Settings
 from app.execution.broker import Broker
 from app.execution.holdings import BrokerHolding
 from app.execution.robinhood_broker import RobinhoodBroker
-from app.models.db_models import ParsedSignal, SignalAction
+from app.models.db_models import ParsedSignal, SignalAction, Tweet
 from app.models.schemas import BrokerOrderResult, IngestedTweet, TradeSignal
+from app.parsing.buy_conviction import infer_buy_conviction
+from app.risk.market_hours import (
+    is_within_regular_market_hours,
+    next_full_session_close_after,
+)
 from app.risk.risk_manager import RiskManager
 from app.risk.sell_sizing import SellOrderSizing, resolve_sell_order
 from app.services.trade_recorder import create_trade_record
 from app.services.trade_status import TradeStatusSync, trade_is_terminal
 from app.services.alerts import AlertService
+
+QUEUED_FOR_MARKET_OPEN = "queued_for_market_open"
+DEFERRED_QUEUED = "queued"
+DEFERRED_RELEASED = "released"
+DEFERRED_EXPIRED = "expired"
 
 
 @dataclass(slots=True)
@@ -78,6 +90,9 @@ class AccountManager:
         self,
         signal: TradeSignal,
         tweet: IngestedTweet,
+        *,
+        as_of: datetime | None = None,
+        existing_parsed_signal_id: int | None = None,
     ) -> ManagerExecutionResult:
         if self._paused or not self.config.enabled:
             return ManagerExecutionResult(
@@ -96,6 +111,10 @@ class AccountManager:
             elif signal.action == SignalAction.SELL and signal.ticker:
                 holding = await self._fetch_holding(signal.ticker)
 
+        # Default: tweet clock so a catch-up fetch at the open does not immediately
+        # trade posts published outside the session — those are queued instead.
+        risk_as_of = as_of if as_of is not None else tweet.posted_at
+
         with self.session_factory() as db:
             risk_result = self.risk_manager.evaluate(
                 signal,
@@ -104,35 +123,100 @@ class AccountManager:
                 cash_available_usd=cash_available_usd,
                 portfolio_value_usd=portfolio_value_usd,
                 holding=holding,
-                # Use the tweet clock so a catch-up fetch at the open does not
-                # trade posts that were published outside the session.
-                as_of=tweet.posted_at,
+                as_of=risk_as_of,
+                exclude_parsed_signal_id=existing_parsed_signal_id,
             )
-            parsed_signal = ParsedSignal(
-                tweet_pk=tweet.tweet_pk,
-                source_tweet_id=signal.source_tweet_id,
-                ticker=signal.ticker,
-                action=signal.action,
-                confidence=signal.confidence,
-                strength=signal.strength,
-                score=signal.score,
-                raw_text=signal.raw_text,
-                suggested_trade_usd=signal.suggested_trade_usd,
-                rejection_reason=None if risk_result.allowed else risk_result.reason,
-                watch_conviction=(
-                    signal.watch_conviction.value if signal.watch_conviction is not None else None
-                ),
-                target_portfolio_pct=signal.target_portfolio_pct,
-                needs_review=signal.needs_review,
-                review_reason=signal.review_reason,
-                manager_id=self.id,
+            should_queue = (
+                not risk_result.allowed
+                and risk_result.reason == "outside_market_hours"
+                and self.settings.defer_outside_market_hours
+                and signal.action in {SignalAction.BUY, SignalAction.SELL}
+                and existing_parsed_signal_id is None
             )
-            db.add(parsed_signal)
+            rejection_reason = None if risk_result.allowed else risk_result.reason
+            deferred_status = None
+            deferred_expires_at = None
+            if should_queue:
+                rejection_reason = QUEUED_FOR_MARKET_OPEN
+                deferred_status = DEFERRED_QUEUED
+                deferred_expires_at = next_full_session_close_after(tweet.posted_at).astimezone(
+                    timezone.utc
+                )
+
+            if existing_parsed_signal_id is not None:
+                parsed_signal = db.get(ParsedSignal, existing_parsed_signal_id)
+                if parsed_signal is None:
+                    return ManagerExecutionResult(
+                        manager_id=self.id,
+                        allowed=False,
+                        rejection_reason="missing_deferred_signal",
+                    )
+                parsed_signal.suggested_trade_usd = signal.suggested_trade_usd
+                parsed_signal.portfolio_allocation_pct = signal.portfolio_allocation_pct
+                parsed_signal.sell_fraction = signal.sell_fraction
+                parsed_signal.sell_sizing_explicit = signal.sell_sizing_explicit
+                parsed_signal.target_portfolio_pct = signal.target_portfolio_pct
+                if risk_result.allowed:
+                    parsed_signal.rejection_reason = None
+                    parsed_signal.deferred_status = DEFERRED_RELEASED
+                else:
+                    parsed_signal.rejection_reason = rejection_reason
+                    if parsed_signal.deferred_status == DEFERRED_QUEUED:
+                        parsed_signal.deferred_status = None
+            else:
+                parsed_signal = ParsedSignal(
+                    tweet_pk=tweet.tweet_pk,
+                    source_tweet_id=signal.source_tweet_id,
+                    ticker=signal.ticker,
+                    action=signal.action,
+                    confidence=signal.confidence,
+                    strength=signal.strength,
+                    score=signal.score,
+                    raw_text=signal.raw_text,
+                    suggested_trade_usd=signal.suggested_trade_usd,
+                    rejection_reason=rejection_reason,
+                    watch_conviction=(
+                        signal.watch_conviction.value
+                        if signal.watch_conviction is not None
+                        else None
+                    ),
+                    target_portfolio_pct=signal.target_portfolio_pct,
+                    portfolio_allocation_pct=signal.portfolio_allocation_pct,
+                    sell_fraction=signal.sell_fraction,
+                    sell_sizing_explicit=signal.sell_sizing_explicit,
+                    deferred_status=deferred_status,
+                    deferred_expires_at=deferred_expires_at,
+                    needs_review=signal.needs_review,
+                    review_reason=signal.review_reason,
+                    manager_id=self.id,
+                )
+                db.add(parsed_signal)
             db.flush()
             parsed_signal_id = parsed_signal.id
             db.commit()
 
             if not risk_result.allowed:
+                if should_queue:
+                    self.logger.info(
+                        "signal_queued_for_market_open",
+                        extra={
+                            "event_type": "signal_queued",
+                            "manager_id": self.id,
+                            "tweet_id": tweet.tweet_id,
+                            "ticker": signal.ticker,
+                            "action": signal.action.value,
+                            "expires_at": deferred_expires_at.isoformat()
+                            if deferred_expires_at
+                            else None,
+                            "portfolio_allocation_pct": signal.portfolio_allocation_pct,
+                        },
+                    )
+                    return ManagerExecutionResult(
+                        manager_id=self.id,
+                        parsed_signal_id=parsed_signal_id,
+                        allowed=False,
+                        rejection_reason=QUEUED_FOR_MARKET_OPEN,
+                    )
                 if signal.action not in {SignalAction.IGNORE, SignalAction.WATCH}:
                     self.logger.info(
                         "signal_rejected",
@@ -337,6 +421,106 @@ class AccountManager:
             allowed=True,
         )
 
+    async def release_queued_signals(self, *, now: datetime | None = None) -> int:
+        """Execute deferred BUY/SELL rows once the regular session is open.
+
+        Past-due queues are expired even outside market hours. Returns how many
+        queued rows were released or expired.
+        """
+        if self._paused or not self.config.enabled:
+            return 0
+        if not self.settings.defer_outside_market_hours:
+            return 0
+
+        moment = now or datetime.now(timezone.utc)
+        can_release = (
+            not self.settings.trading_window_enabled
+            or is_within_regular_market_hours(moment)
+        )
+
+        with self.session_factory() as db:
+            rows = db.execute(
+                select(ParsedSignal)
+                .options(selectinload(ParsedSignal.tweet))
+                .where(
+                    ParsedSignal.manager_id == self.id,
+                    ParsedSignal.deferred_status == DEFERRED_QUEUED,
+                    ParsedSignal.action.in_([SignalAction.BUY, SignalAction.SELL]),
+                )
+                .order_by(ParsedSignal.created_at.asc())
+            ).scalars().all()
+            pending = [(row.id, row.deferred_expires_at, row.tweet) for row in rows]
+
+        handled = 0
+        for signal_id, expires_at, tweet_row in pending:
+            if expires_at is not None:
+                expires = expires_at
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                if moment >= expires:
+                    self._expire_queued_signal(signal_id)
+                    handled += 1
+                    continue
+
+            if not can_release or tweet_row is None:
+                continue
+
+            signal = self._trade_signal_from_parsed(signal_id)
+            if signal is None:
+                continue
+            ingested = _ingested_from_tweet(tweet_row)
+            await self.evaluate_and_execute(
+                signal,
+                ingested,
+                as_of=moment,
+                existing_parsed_signal_id=signal_id,
+            )
+            handled += 1
+        return handled
+
+    def _expire_queued_signal(self, parsed_signal_id: int) -> None:
+        with self.session_factory() as db:
+            row = db.get(ParsedSignal, parsed_signal_id)
+            if row is None or row.deferred_status != DEFERRED_QUEUED:
+                return
+            row.deferred_status = DEFERRED_EXPIRED
+            row.rejection_reason = "deferred_expired"
+            db.commit()
+        self.logger.info(
+            "deferred_signal_expired",
+            extra={
+                "event_type": "signal_queued",
+                "manager_id": self.id,
+                "parsed_signal_id": parsed_signal_id,
+            },
+        )
+
+    def _trade_signal_from_parsed(self, parsed_signal_id: int) -> TradeSignal | None:
+        with self.session_factory() as db:
+            row = db.get(ParsedSignal, parsed_signal_id)
+            if row is None:
+                return None
+            buy_conviction = None
+            if row.action == SignalAction.BUY and row.raw_text:
+                buy_conviction = infer_buy_conviction(row.raw_text)
+            return TradeSignal(
+                source_tweet_id=row.source_tweet_id,
+                ticker=row.ticker,
+                action=row.action,
+                confidence=row.confidence,
+                strength=row.strength,
+                score=row.score,
+                raw_text=row.raw_text,
+                suggested_trade_usd=row.suggested_trade_usd,
+                portfolio_allocation_pct=row.portfolio_allocation_pct,
+                sell_fraction=row.sell_fraction,
+                target_portfolio_pct=row.target_portfolio_pct,
+                sell_sizing_explicit=bool(row.sell_sizing_explicit),
+                buy_conviction=buy_conviction,
+                needs_review=bool(row.needs_review),
+                review_reason=row.review_reason,
+            )
+
     async def record_watch(
         self,
         signal: TradeSignal,
@@ -483,3 +667,16 @@ class AccountManager:
             )
             return None
         return holding
+
+
+def _ingested_from_tweet(tweet: Tweet) -> IngestedTweet:
+    return IngestedTweet(
+        tweet_pk=tweet.id,
+        tweet_id=tweet.tweet_id,
+        account=tweet.account,
+        text=tweet.text,
+        posted_at=tweet.posted_at,
+        fetched_at=tweet.fetched_at,
+        is_reply=tweet.is_reply,
+        is_retweet=tweet.is_retweet,
+    )

@@ -315,6 +315,7 @@ class BotOrchestrator:
         now_mono = time.monotonic()
 
         await self._maybe_alert_robinhood_auth_age()
+        await self._release_deferred_orders()
 
         if self.settings.snapshot_enabled:
             interval = max(60, self.settings.snapshot_interval_seconds)
@@ -357,6 +358,34 @@ class BotOrchestrator:
                 )
 
         await self._maybe_digest_checkpoints()
+
+    async def _release_deferred_orders(self) -> None:
+        if not self.settings.defer_outside_market_hours:
+            return
+        for manager in self.managers:
+            if not manager.config.enabled:
+                continue
+            try:
+                released = await manager.release_queued_signals()
+            except Exception as exc:
+                self.logger.warning(
+                    "deferred_order_release_failed",
+                    extra={
+                        "event_type": "signal_queued",
+                        "manager_id": manager.id,
+                        "error": str(exc),
+                    },
+                )
+                continue
+            if released:
+                self.logger.info(
+                    "deferred_orders_processed",
+                    extra={
+                        "event_type": "signal_queued",
+                        "manager_id": manager.id,
+                        "handled": released,
+                    },
+                )
 
     async def _maybe_alert_robinhood_auth_age(self) -> None:
         if self.settings.broker_backend != "robinhood":
