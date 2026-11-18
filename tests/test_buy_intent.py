@@ -38,6 +38,11 @@ def test_accepts_swapped_for_as_buy() -> None:
     assert is_affirmative_buy_intent("Swapped for 5% $COHR at $223.58")
 
 
+def test_accepts_put_pct_into_as_buy() -> None:
+    assert is_affirmative_buy_intent("Put 2% into $COHR at $200.")
+    assert is_affirmative_buy_intent("Putting 1% into $NVDA here.")
+
+
 def test_rejects_looking_for_entry_without_fill() -> None:
     assert not is_affirmative_buy_intent(
         "Looking for my entry in some $NVDA puts now. Will alert when I add."

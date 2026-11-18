@@ -16,6 +16,9 @@ def test_options_contract_language_detected() -> None:
     assert is_options_contract_language("Added some $NVDA $150 Puts expiring on Friday")
     assert is_options_contract_language("Sold my $SMH puts for about 85% gains")
     assert not is_options_contract_language("I wanna stay put in $NVDA for now")
+    # Equity sizing verb must not trip the options gate.
+    assert not is_options_contract_language("Put 2% into $COHR at $200.")
+    assert not is_options_contract_language("I put 3% of the port into $UBER.")
 
 
 def test_hybrid_ignores_stop_loss_even_with_trade_header() -> None:
@@ -73,6 +76,18 @@ def test_hybrid_upsize_with_prior_sell_cash_is_buy() -> None:
     by_ticker = {s.ticker: s.action for s in signals}
     assert by_ticker.get("NFLX") == SignalAction.BUY
     assert by_ticker.get("UBER") == SignalAction.BUY
+    # Funding-source cashtag must not inherit the shared BUY.
+    assert by_ticker.get("NVDA") == SignalAction.IGNORE
+
+
+def test_hybrid_put_pct_into_is_equity_buy_not_options() -> None:
+    parser = HybridSignalParser(known_tickers=["COHR"])
+    signals = parser.parse(
+        "Trade\n\nPut 2% into $COHR at $200.",
+        source_tweet_id="put-pct",
+    )
+    by_ticker = {s.ticker: s.action for s in signals}
+    assert by_ticker.get("COHR") == SignalAction.BUY
 
 
 def test_hybrid_swap_sold_for_is_sell_then_buy() -> None:

@@ -86,6 +86,9 @@ _AFFIRMATIVE_BUY = (
     word_family_regex("upsize"),
     r"\bswapped (?:for|into)\b",
     r"\bswap(?:ping)? (?:for|into)\b",
+    # Equity sizing verb — must not be confused with options \"puts\".
+    r"\bput(?:ting)? \d+(?:\.\d+)?%?(?:\s+port)?\s+into\b",
+    r"\bput(?:ting)? \d+(?:\.\d+)?% (?:port )?in(?:to)?\b",
 )
 
 

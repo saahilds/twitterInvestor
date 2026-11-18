@@ -15,7 +15,7 @@ from app.parsing.sell_fraction import (
     infer_sell_fraction,
     infer_target_portfolio_pct,
 )
-from app.parsing.sell_intent import is_affirmative_sell_intent
+from app.parsing.sell_intent import is_affirmative_sell_intent, is_past_sell_context_only
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.parsing.signal_segments import SignalSegment, segment_trade_units
 from app.parsing.stop_loss_intent import is_stop_loss_setup
@@ -85,6 +85,7 @@ class HybridSignalParser:
                 # Full tweet only when one action governs every ticker; mixed
                 # Trade alerts (add + trim) keep per-segment local text.
                 tweet_text=raw_text if shared_action is not None else None,
+                full_tweet=raw_text,
             )
             for segment in segments
         ]
@@ -167,10 +168,20 @@ class HybridSignalParser:
         force_trade: bool = False,
         shared_action: SignalAction | None = None,
         tweet_text: str | None = None,
+        full_tweet: str | None = None,
     ) -> TradeSignal:
         local = segment.local_text
         decision_text = tweet_text or local
+        recap_context = full_tweet or decision_text
         if is_stop_loss_setup(decision_text) or is_options_contract_language(local):
+            return self._rules._ignore_signal(
+                local,
+                source_tweet_id,
+                reason_score=0,
+                ticker=segment.ticker,
+            )
+        # Cashtag only cited as prior-sale funding ("cash from the $NVDA sell").
+        if segment.ticker and is_past_sell_context_only(segment.ticker, recap_context):
             return self._rules._ignore_signal(
                 local,
                 source_tweet_id,
@@ -200,6 +211,7 @@ class HybridSignalParser:
                 segment,
                 source_tweet_id,
                 tweet_text=tweet_text,
+                full_tweet=full_tweet,
             )
 
         rule_signal = self._rules._classify_segment(segment, source_tweet_id)
@@ -315,16 +327,26 @@ class HybridSignalParser:
         source_tweet_id: str,
         *,
         tweet_text: str | None = None,
+        full_tweet: str | None = None,
     ) -> TradeSignal:
         """Under Trade header: structure → verbs → intent → ML; never IGNORE/WATCH.
 
         Exception: stop-loss setups and options contracts stay IGNORE until those
         order types are supported (do not buy/sell the underlying by mistake).
+        Past-sale funding cashtags are also IGNORE.
         """
         local = segment.local_text
         # Prefer full-tweet context so multi-ticker tails inherit the governing verb.
         decision_text = tweet_text or local
+        recap_context = full_tweet or decision_text
         if is_stop_loss_setup(decision_text) or is_options_contract_language(local):
+            return self._rules._ignore_signal(
+                local,
+                source_tweet_id,
+                reason_score=0,
+                ticker=segment.ticker,
+            )
+        if segment.ticker and is_past_sell_context_only(segment.ticker, recap_context):
             return self._rules._ignore_signal(
                 local,
                 source_tweet_id,

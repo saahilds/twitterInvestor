@@ -1,4 +1,4 @@
-from app.parsing.sell_intent import is_affirmative_sell_intent
+from app.parsing.sell_intent import is_affirmative_sell_intent, is_past_sell_context_only
 
 
 def test_affirmative_sold_all() -> None:
@@ -43,6 +43,16 @@ def test_rejects_prior_sell_cash_recap() -> None:
     assert not is_affirmative_sell_intent(
         "Despite my sell at around these prices a few weeks ago, I added $FPS."
     )
+
+
+def test_past_sell_context_only_funding_cashtag() -> None:
+    text = (
+        "upsizing here with my cash from the $NVDA sell yesterday.\n"
+        "Upsized $NFLX from 3% to 4%."
+    )
+    assert is_past_sell_context_only("NVDA", text)
+    assert not is_past_sell_context_only("NFLX", text)
+    assert not is_past_sell_context_only("NVDA", "Sold $NVDA at $180.")
 
 
 def test_rejects_havent_sold_commentary() -> None:
