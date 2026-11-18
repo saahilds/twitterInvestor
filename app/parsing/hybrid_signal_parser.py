@@ -7,6 +7,7 @@ from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.buy_intent import is_affirmative_buy_intent
 from app.parsing.ml_action_classifier import ActionClassifier, ActionPrediction
+from app.parsing.options_intent import is_options_contract_language
 from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
 from app.parsing.sell_fraction import (
     has_explicit_sell_sizing,
@@ -17,6 +18,7 @@ from app.parsing.sell_fraction import (
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_parser import RuleBasedSignalParser
 from app.parsing.signal_segments import SignalSegment, segment_trade_units
+from app.parsing.stop_loss_intent import is_stop_loss_setup
 from app.parsing.trade_header import has_trade_header
 
 
@@ -108,22 +110,29 @@ class HybridSignalParser:
 
     def _infer_structure_first_action(self, text: str) -> SignalAction | None:
         """Deterministic Trade-alert action: structure → verb families → intent."""
+        if is_stop_loss_setup(text) or is_options_contract_language(text):
+            return None
+
         if has_portfolio_weight_reduction(text) or infer_target_portfolio_pct(text) is not None:
             return SignalAction.SELL
 
         keyword_action = self._keyword_action(text)
+        buy_intent = is_affirmative_buy_intent(text)
+        sell_intent = is_affirmative_sell_intent(text)
         if keyword_action is not None:
             # Past "added at $X" can look like a buy while the live move is a trim.
+            # Do not let incidental sell tokens ("cash from the $X sell yesterday")
+            # flip a clear upsize/add into a shared SELL.
             if keyword_action == SignalAction.BUY:
-                sell_score = RuleBasedSignalParser._score(
-                    text.lower(), self._rules.sell_keywords
-                )
-                if sell_score > 0:
+                if sell_intent and not buy_intent:
                     return SignalAction.SELL
+                return SignalAction.BUY
+            if keyword_action == SignalAction.SELL:
+                if buy_intent and not sell_intent:
+                    return SignalAction.BUY
+                return SignalAction.SELL
             return keyword_action
 
-        sell_intent = is_affirmative_sell_intent(text)
-        buy_intent = is_affirmative_buy_intent(text)
         if sell_intent and not buy_intent:
             return SignalAction.SELL
         if buy_intent and not sell_intent:
@@ -159,8 +168,18 @@ class HybridSignalParser:
         shared_action: SignalAction | None = None,
         tweet_text: str | None = None,
     ) -> TradeSignal:
+        local = segment.local_text
+        decision_text = tweet_text or local
+        if is_stop_loss_setup(decision_text) or is_options_contract_language(local):
+            return self._rules._ignore_signal(
+                local,
+                source_tweet_id,
+                reason_score=0,
+                ticker=segment.ticker,
+            )
+
         if shared_action is not None:
-            context = (tweet_text or segment.local_text).lower()
+            context = decision_text.lower()
             keywords = (
                 self._rules.sell_keywords
                 if shared_action == SignalAction.SELL
@@ -183,7 +202,6 @@ class HybridSignalParser:
                 tweet_text=tweet_text,
             )
 
-        local = segment.local_text
         rule_signal = self._rules._classify_segment(segment, source_tweet_id)
 
         if rule_signal.action == SignalAction.WATCH:
@@ -298,10 +316,21 @@ class HybridSignalParser:
         *,
         tweet_text: str | None = None,
     ) -> TradeSignal:
-        """Under Trade header: structure → verbs → intent → ML; never IGNORE/WATCH."""
+        """Under Trade header: structure → verbs → intent → ML; never IGNORE/WATCH.
+
+        Exception: stop-loss setups and options contracts stay IGNORE until those
+        order types are supported (do not buy/sell the underlying by mistake).
+        """
         local = segment.local_text
         # Prefer full-tweet context so multi-ticker tails inherit the governing verb.
         decision_text = tweet_text or local
+        if is_stop_loss_setup(decision_text) or is_options_contract_language(local):
+            return self._rules._ignore_signal(
+                local,
+                source_tweet_id,
+                reason_score=0,
+                ticker=segment.ticker,
+            )
         action = self._infer_structure_first_action(decision_text)
         if action is not None:
             score = max(

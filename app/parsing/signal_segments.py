@@ -18,7 +18,8 @@ _ACTION_BOUNDARY = re.compile(
     r"closing|closed|close\b|"
     r"entered|entering|opened|opening|"
     r"taking profit|took (?:a |the )?position|starter|"
-    r"scaling|scale in|reducing|reduced|reduce\b"
+    r"scaling|scale in|reducing|reduced|reduce\b|"
+    r"swapped|swapping|swap\b|upsizing|upsized|upsize\b"
     r")"
 )
 
@@ -93,8 +94,9 @@ def _segment_start(
         return candidates[-1]
     if index == 0:
         return 0
-    # Midpoint between prior cashtag and this one.
-    return (prior_end + cashtag_start) // 2
+    # Midpoint between prior cashtag and this one — snap to whitespace so
+    # "Swapped" is not split into "Swappe" / "d for".
+    return _snap_split_to_whitespace(text, (prior_end + cashtag_start) // 2, prior_end, cashtag_start)
 
 
 def _segment_end(
@@ -111,7 +113,27 @@ def _segment_end(
     candidates = [b for b in boundaries if cashtag_end <= b <= next_start]
     if candidates:
         return candidates[0]
-    return (cashtag_end + next_start) // 2
+    return _snap_split_to_whitespace(text, (cashtag_end + next_start) // 2, cashtag_end, next_start)
+
+
+def _snap_split_to_whitespace(text: str, mid: int, lo: int, hi: int) -> int:
+    """Prefer a whitespace boundary near ``mid`` within ``[lo, hi]``."""
+    if lo >= hi:
+        return mid
+    mid = min(max(mid, lo), hi)
+    if mid < len(text) and text[mid].isspace():
+        return mid
+    left = right = mid
+    while left > lo or right < hi:
+        if left > lo:
+            left -= 1
+            if text[left].isspace():
+                return left + 1
+        if right < hi:
+            if text[right].isspace():
+                return right
+            right += 1
+    return mid
 
 
 def _dedupe_segments(segments: list[SignalSegment]) -> list[SignalSegment]:

@@ -34,6 +34,16 @@ def test_accepts_buy_even_if_price_reaction_also_mentioned() -> None:
     assert is_affirmative_buy_intent("$SPY puked so I added a starter")
 
 
+def test_accepts_swapped_for_as_buy() -> None:
+    assert is_affirmative_buy_intent("Swapped for 5% $COHR at $223.58")
+
+
+def test_rejects_looking_for_entry_without_fill() -> None:
+    assert not is_affirmative_buy_intent(
+        "Looking for my entry in some $NVDA puts now. Will alert when I add."
+    )
+
+
 def test_rejects_tempting_without_entry() -> None:
     assert not is_affirmative_buy_intent(
         "i most likely will not be making any moves because i'm leveraged already. "

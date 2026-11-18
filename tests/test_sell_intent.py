@@ -36,6 +36,15 @@ def test_rejects_corporate_thesis_sold_language() -> None:
     assert not is_affirmative_sell_intent("Revenue grew; they sold $1.5B of product last year $FPS")
 
 
+def test_rejects_prior_sell_cash_recap() -> None:
+    assert not is_affirmative_sell_intent(
+        "upsizing here with my cash from the $NVDA sell yesterday. Upsized $NFLX."
+    )
+    assert not is_affirmative_sell_intent(
+        "Despite my sell at around these prices a few weeks ago, I added $FPS."
+    )
+
+
 def test_rejects_havent_sold_commentary() -> None:
     text = "For anyone asking about $HLIT. I haven't sold a single share, nothing within the thesis has changed."
     assert not is_affirmative_sell_intent(text)

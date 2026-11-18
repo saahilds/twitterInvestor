@@ -84,6 +84,11 @@ _PAST_TRADE_RECAP = (
     r"\bhad sold\b",
     r"\bpreviously sold\b",
     r"\bsold at \$[\d.]+\.\s",
+    r"\bsell yesterday\b",
+    r"\bmy sell (?:at|around|near)\b",
+    r"\bdespite my sell\b",
+    r"\bcash from (?:the )?\$?[A-Za-z]{1,5}\s+sell\b",
+    r"\bfrom the \$?[A-Za-z]{1,5}\s+sell\b",
 )
 
 
@@ -113,8 +118,11 @@ def is_affirmative_sell_intent(text: str) -> bool:
     # Remove future/conditional phrases so "will look to trim" does not
     # false-trigger on the bare "trim" token, while still allowing
     # "Trimming $ADEA … will look to trim elsewhere" to count as a sell.
+    # Also strip past-sell recaps ("cash from the $NVDA sell yesterday").
     cleaned = snippet
     for pattern in _SELL_HYPOTHETICAL:
+        cleaned = re.sub(pattern, " ", cleaned)
+    for pattern in _PAST_TRADE_RECAP:
         cleaned = re.sub(pattern, " ", cleaned)
 
     if _matches_any(_AFFIRMATIVE_SELL, cleaned):
