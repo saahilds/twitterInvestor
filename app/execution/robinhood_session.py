@@ -357,7 +357,8 @@ class RobinhoodSessionManager:
 
         timeout = max(30, int(self.settings.robinhood_reauth_timeout_seconds))
         try:
-            with patch_device_approval(timeout_seconds=timeout, poll_seconds=8.0):
+            # Poll gently — aggressive get_prompts_status checks earn long 429s.
+            with patch_device_approval(timeout_seconds=timeout, poll_seconds=15.0):
                 result = rh.login(
                     username=self.settings.robinhood_username,
                     password=self.settings.robinhood_password,
