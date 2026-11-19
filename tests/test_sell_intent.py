@@ -1,4 +1,4 @@
-from app.parsing.sell_intent import is_affirmative_sell_intent
+from app.parsing.sell_intent import is_affirmative_sell_intent, is_past_sell_context_only
 
 
 def test_affirmative_sold_all() -> None:
@@ -34,6 +34,25 @@ def test_rejects_corporate_thesis_sold_language() -> None:
         "$FPS booked more than they sold all year, and the book to bill went up to 3.3x."
     )
     assert not is_affirmative_sell_intent("Revenue grew; they sold $1.5B of product last year $FPS")
+
+
+def test_rejects_prior_sell_cash_recap() -> None:
+    assert not is_affirmative_sell_intent(
+        "upsizing here with my cash from the $NVDA sell yesterday. Upsized $NFLX."
+    )
+    assert not is_affirmative_sell_intent(
+        "Despite my sell at around these prices a few weeks ago, I added $FPS."
+    )
+
+
+def test_past_sell_context_only_funding_cashtag() -> None:
+    text = (
+        "upsizing here with my cash from the $NVDA sell yesterday.\n"
+        "Upsized $NFLX from 3% to 4%."
+    )
+    assert is_past_sell_context_only("NVDA", text)
+    assert not is_past_sell_context_only("NFLX", text)
+    assert not is_past_sell_context_only("NVDA", "Sold $NVDA at $180.")
 
 
 def test_rejects_havent_sold_commentary() -> None:

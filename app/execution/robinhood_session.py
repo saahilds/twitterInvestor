@@ -14,6 +14,12 @@ from app.execution.robinhood_auth_age import (
     record_successful_auth,
     seed_auth_meta_from_pickle_mtime,
 )
+from app.execution.robinhood_device_approval import (
+    RobinhoodRateLimitedError,
+    RobinhoodVerificationTimeout,
+    patch_device_approval,
+    take_last_error,
+)
 
 try:
     from robin_stocks import robinhood as rh
@@ -222,6 +228,7 @@ class RobinhoodSessionManager:
                 self._reauth.message = (
                     f"No approval within {timeout}s. Open the Robinhood app and try again."
                 )
+            # User may still approve late; keep the prior session if it was usable.
             self._restore_pickle_backup(backup)
             self.logger.warning(
                 "robinhood_reauth_timeout",
@@ -244,15 +251,31 @@ class RobinhoodSessionManager:
             self.logger.info("robinhood_reauth_succeeded", extra={"event_type": "robinhood_auth"})
             return
 
+        error_s = str(error)
         with self._lock:
             self._reauth.status = "failed"
             self._reauth.finished_at = datetime.now(timezone.utc)
-            self._reauth.error = str(error)
-            self._reauth.message = f"Reauth failed: {error}"
-        self._restore_pickle_backup(backup)
+            self._reauth.error = error_s
+            if error_s == "robinhood_rate_limited":
+                self._reauth.message = (
+                    "Robinhood rate-limited device approval. Wait ~15 minutes, "
+                    "then Refresh RH auth again with the app ready to approve."
+                )
+            else:
+                self._reauth.message = f"Reauth failed: {error_s}"
+        # Rate-limit / verification failures mean the old pickle was already dead;
+        # restoring it only restarts the 429 loop.
+        if error_s in {"robinhood_rate_limited", "robinhood_verification_required"}:
+            if backup is not None and backup.exists():
+                try:
+                    backup.unlink()
+                except OSError:
+                    pass
+        else:
+            self._restore_pickle_backup(backup)
         self.logger.warning(
             "robinhood_reauth_failed",
-            extra={"event_type": "robinhood_auth", "error": str(error)},
+            extra={"event_type": "robinhood_auth", "error": error_s},
         )
 
     def _backup_and_clear_pickle(self) -> Path | None:
@@ -272,6 +295,27 @@ class RobinhoodSessionManager:
 
     def _restore_pickle_backup(self, backup: Path | None) -> None:
         if backup is None or not backup.is_file():
+            return
+        # Do not put a stale pickle back — it just forces another device-approval
+        # loop and more 429s on get_prompts_status.
+        max_age_days = float(self.settings.robinhood_pickle_max_age_days)
+        try:
+            age_days = (time.time() - backup.stat().st_mtime) / 86400.0
+        except OSError:
+            age_days = max_age_days + 1
+        if age_days > max_age_days:
+            self.logger.warning(
+                "robinhood_pickle_backup_expired_discarded",
+                extra={
+                    "event_type": "robinhood_auth",
+                    "age_days": round(age_days, 3),
+                    "max_age_days": max_age_days,
+                },
+            )
+            try:
+                backup.unlink()
+            except OSError:
+                pass
             return
         path = pickle_path()
         try:
@@ -311,18 +355,27 @@ class RobinhoodSessionManager:
                 return False, "pyotp_unavailable_for_mfa"
             mfa_code = pyotp.TOTP(self.settings.robinhood_mfa_secret).now()
 
+        timeout = max(30, int(self.settings.robinhood_reauth_timeout_seconds))
         try:
-            result = rh.login(
-                username=self.settings.robinhood_username,
-                password=self.settings.robinhood_password,
-                mfa_code=mfa_code,
-                expiresIn=86400,
-            )
+            # Poll gently — aggressive get_prompts_status checks earn long 429s.
+            with patch_device_approval(timeout_seconds=timeout, poll_seconds=15.0):
+                result = rh.login(
+                    username=self.settings.robinhood_username,
+                    password=self.settings.robinhood_password,
+                    mfa_code=mfa_code,
+                    expiresIn=86400,
+                )
         except Exception as exc:
             return False, classify_login_error(exc)
 
+        # robin_stocks.login swallows verification errors and returns None.
+        swallowed = take_last_error()
         if result:
             return True, None
+        if swallowed is not None:
+            return False, classify_login_error(
+                swallowed if isinstance(swallowed, Exception) else Exception(str(swallowed))
+            )
         return False, "robinhood_login_failed"
 
     def _session_recently_validated(self, now: float) -> bool:
@@ -371,11 +424,18 @@ class RobinhoodSessionManager:
 
 
 def classify_login_error(exc: Exception) -> str:
+    if isinstance(exc, RobinhoodRateLimitedError):
+        return "robinhood_rate_limited"
+    if isinstance(exc, RobinhoodVerificationTimeout):
+        return "robinhood_verification_required"
     message = str(exc).lower()
     if "429" in message or "too many requests" in message:
         return "robinhood_rate_limited"
     if "nonetype" in message and "subscriptable" in message:
-        return "robinhood_verification_failed"
-    if "verification" in message or "challenge" in message:
+        # Upstream crash when get_prompts_status returns None after a 429.
+        return "robinhood_rate_limited"
+    if "verification" in message or "challenge" in message or "device approval" in message:
+        return "robinhood_verification_required"
+    if "timeout" in message:
         return "robinhood_verification_required"
     return "robinhood_login_failed"

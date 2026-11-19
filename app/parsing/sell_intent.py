@@ -84,11 +84,48 @@ _PAST_TRADE_RECAP = (
     r"\bhad sold\b",
     r"\bpreviously sold\b",
     r"\bsold at \$[\d.]+\.\s",
+    r"\bsell yesterday\b",
+    r"\bmy sell (?:at|around|near)\b",
+    r"\bdespite my sell\b",
+    r"\bcash from (?:the )?\$?[A-Za-z]{1,5}\s+sell\b",
+    r"\bfrom the \$?[A-Za-z]{1,5}\s+sell\b",
 )
 
 
 def _matches_any(patterns: tuple[str, ...], text: str) -> bool:
     return any(re.search(pattern, text) for pattern in patterns)
+
+
+def is_past_sell_context_only(ticker: str, text: str) -> bool:
+    """True when every $TICKER mention only cites a prior sale / funding source.
+
+    Used to stop shared BUY from trading a name that appears only as
+    \"cash from the $NVDA sell yesterday\" while other tickers are upsized.
+    """
+    symbol = (ticker or "").strip().upper()
+    if not symbol or not text:
+        return False
+    mentions = list(re.finditer(rf"\${re.escape(symbol)}\b", text, flags=re.IGNORECASE))
+    if not mentions:
+        return False
+    lower = text.lower()
+    sym = re.escape(symbol.lower())
+    # Require sell/sold near the cashtag so live "Sold $NVDA" still trades.
+    # Build with concatenation — rf"\\${sym}" doubles the backslash.
+    near_patterns = (
+        r"cash from (?:the )?\$" + sym + r"(?:\s|\n){0,48}sell",
+        r"from the \$" + sym + r"(?:\s|\n){0,48}sell",
+        r"\$" + sym + r"(?:\s|\n){0,24}sell yesterday",
+        r"despite my (?:\$" + sym + r"\s+)?sell",
+        r"my \$" + sym + r"(?:\s|\n){0,24}sell",
+    )
+    for match in mentions:
+        start = max(0, match.start() - 56)
+        end = min(len(lower), match.end() + 56)
+        window = lower[start:end]
+        if not any(re.search(pattern, window) for pattern in near_patterns):
+            return False
+    return True
 
 
 def sell_suppressed_by_watch(text: str) -> bool:
@@ -113,8 +150,11 @@ def is_affirmative_sell_intent(text: str) -> bool:
     # Remove future/conditional phrases so "will look to trim" does not
     # false-trigger on the bare "trim" token, while still allowing
     # "Trimming $ADEA … will look to trim elsewhere" to count as a sell.
+    # Also strip past-sell recaps ("cash from the $NVDA sell yesterday").
     cleaned = snippet
     for pattern in _SELL_HYPOTHETICAL:
+        cleaned = re.sub(pattern, " ", cleaned)
+    for pattern in _PAST_TRADE_RECAP:
         cleaned = re.sub(pattern, " ", cleaned)
 
     if _matches_any(_AFFIRMATIVE_SELL, cleaned):

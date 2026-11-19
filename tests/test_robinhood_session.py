@@ -12,9 +12,14 @@ def test_classify_429_error() -> None:
 
 
 def test_classify_verification_error() -> None:
+    # Upstream crashes with NoneType after a 429 on get_prompts_status.
     assert (
         classify_login_error(Exception("'NoneType' object is not subscriptable"))
-        == "robinhood_verification_failed"
+        == "robinhood_rate_limited"
+    )
+    assert (
+        classify_login_error(Exception("Device approval not confirmed within 180s"))
+        == "robinhood_verification_required"
     )
 
 

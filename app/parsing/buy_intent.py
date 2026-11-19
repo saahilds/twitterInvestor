@@ -57,6 +57,9 @@ _BUY_HYPOTHETICAL = (
     r"\bif i buy\b",
     r"\bplan to buy\b",
     r"\blook(?:ing)? to add\b",
+    r"\blook(?:ing)? for (?:my |an |a )?entry\b",
+    r"\bwill alert when i add\b",
+    r"\bwill alert when (?:i |we )?add\b",
 )
 
 # Explicit author buy / add language.
@@ -81,6 +84,11 @@ _AFFIRMATIVE_BUY = (
     r"\bgot back into\b",
     r"\bhad to take a position\b",
     word_family_regex("upsize"),
+    r"\bswapped (?:for|into)\b",
+    r"\bswap(?:ping)? (?:for|into)\b",
+    # Equity sizing verb — must not be confused with options \"puts\".
+    r"\bput(?:ting)? \d+(?:\.\d+)?%?(?:\s+port)?\s+into\b",
+    r"\bput(?:ting)? \d+(?:\.\d+)?% (?:port )?in(?:to)?\b",
 )
 
 
