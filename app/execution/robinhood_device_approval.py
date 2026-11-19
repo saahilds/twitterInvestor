@@ -18,6 +18,10 @@ from typing import Any
 
 logger = logging.getLogger("trading_bot")
 
+# robin_stocks.login() swallows verification exceptions and returns None.
+# Stash the last error so our session manager can classify it.
+_last_error: BaseException | None = None
+
 
 class RobinhoodRateLimitedError(RuntimeError):
     """Robinhood rejected prompt polling with 429 / empty responses."""
@@ -25,6 +29,18 @@ class RobinhoodRateLimitedError(RuntimeError):
 
 class RobinhoodVerificationTimeout(TimeoutError):
     """Device approval was not completed within the allotted window."""
+
+
+def take_last_error() -> BaseException | None:
+    global _last_error
+    err = _last_error
+    _last_error = None
+    return err
+
+
+def _set_last_error(exc: BaseException) -> None:
+    global _last_error
+    _last_error = exc
 
 
 def _challenge_status(payload: Any) -> str | None:
@@ -40,12 +56,14 @@ def validate_sheriff_id(
     *,
     timeout_seconds: int = 180,
     poll_seconds: float = 8.0,
-    max_empty_polls: int = 8,
+    max_empty_polls: int = 3,
 ) -> None:
     """Poll Robinhood's sheriff / device-approval workflow until approved."""
     # Import inside so tests can patch robin_stocks without importing it early.
     from robin_stocks.robinhood.helper import request_get, request_post
 
+    global _last_error
+    _last_error = None
     print("Starting verification process...")
     pathfinder_url = "https://api.robinhood.com/pathfinder/user_machine/"
     machine_payload = {
@@ -195,6 +213,25 @@ def validate_sheriff_id(
     print("Max workflow polls reached. Assuming login approved and proceeding.")
 
 
+def _run_validate(
+    device_token: str,
+    workflow_id: str,
+    *,
+    timeout_seconds: int,
+    poll_seconds: float,
+) -> None:
+    try:
+        validate_sheriff_id(
+            device_token,
+            workflow_id,
+            timeout_seconds=timeout_seconds,
+            poll_seconds=poll_seconds,
+        )
+    except BaseException as exc:
+        _set_last_error(exc)
+        raise
+
+
 @contextmanager
 def patch_device_approval(
     *,
@@ -207,7 +244,7 @@ def patch_device_approval(
     original = auth_mod._validate_sherrif_id
 
     def _patched(device_token: str, workflow_id: str) -> None:
-        validate_sheriff_id(
+        _run_validate(
             device_token,
             workflow_id,
             timeout_seconds=timeout_seconds,

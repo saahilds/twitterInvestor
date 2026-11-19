@@ -18,6 +18,7 @@ from app.execution.robinhood_device_approval import (
     RobinhoodRateLimitedError,
     RobinhoodVerificationTimeout,
     patch_device_approval,
+    take_last_error,
 )
 
 try:
@@ -366,8 +367,14 @@ class RobinhoodSessionManager:
         except Exception as exc:
             return False, classify_login_error(exc)
 
+        # robin_stocks.login swallows verification errors and returns None.
+        swallowed = take_last_error()
         if result:
             return True, None
+        if swallowed is not None:
+            return False, classify_login_error(
+                swallowed if isinstance(swallowed, Exception) else Exception(str(swallowed))
+            )
         return False, "robinhood_login_failed"
 
     def _session_recently_validated(self, now: float) -> bool:
