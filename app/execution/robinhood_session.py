@@ -10,9 +10,12 @@ from pathlib import Path
 
 from app.config.settings import Settings
 from app.execution.robinhood_auth_age import (
+    clear_login_block,
     pickle_path,
+    read_login_block,
     record_successful_auth,
     seed_auth_meta_from_pickle_mtime,
+    set_login_block,
 )
 from app.execution.robinhood_device_approval import (
     RobinhoodRateLimitedError,
@@ -136,6 +139,12 @@ class RobinhoodSessionManager:
                 )
                 return self.reauth_snapshot()
 
+            # Explicit user action clears persisted cool-downs.
+            clear_login_block()
+            self._state.blocked_until = 0.0
+            self._state.consecutive_failures = 0
+            self._state.last_error = None
+
             self._reauth.status = "awaiting_approval"
             self._reauth.started_at = datetime.now(timezone.utc)
             self._reauth.finished_at = None
@@ -164,6 +173,27 @@ class RobinhoodSessionManager:
                 self._log_cooldown(now)
                 return self._state.last_error or "robinhood_login_cooldown"
 
+            if not force:
+                blocked_until, blocked_reason = read_login_block()
+                if blocked_until is not None:
+                    self._state.last_error = blocked_reason or "robinhood_rate_limited"
+                    self._state.blocked_until = max(
+                        self._state.blocked_until,
+                        now + max(0.0, (blocked_until - datetime.now(timezone.utc)).total_seconds()),
+                    )
+                    self._log_cooldown(now)
+                    return self._state.last_error
+
+            # No saved session: never auto-trigger device approval. Only explicit
+            # dashboard /robinhood/reauth (force=True) may start a fresh login.
+            if not force and not pickle_path().is_file():
+                self._state.last_error = "robinhood_login_required"
+                self.logger.warning(
+                    "robinhood_login_skipped_no_pickle",
+                    extra={"event_type": "robinhood_auth"},
+                )
+                return "robinhood_login_required"
+
             if not force and self._state.logged_in:
                 if self._session_recently_validated(now) or self._validate_existing_session(now):
                     return None
@@ -182,6 +212,11 @@ class RobinhoodSessionManager:
             self._state.last_error = error or "robinhood_login_failed"
             backoff = self._backoff_seconds(error, self._state.consecutive_failures)
             self._state.blocked_until = finished + backoff
+            if self._state.last_error == "robinhood_rate_limited":
+                set_login_block(
+                    until=datetime.fromtimestamp(time.time() + backoff, tz=timezone.utc),
+                    reason="robinhood_rate_limited",
+                )
             self.logger.warning(
                 "robinhood_login_failed",
                 extra={
@@ -257,9 +292,13 @@ class RobinhoodSessionManager:
             self._reauth.finished_at = datetime.now(timezone.utc)
             self._reauth.error = error_s
             if error_s == "robinhood_rate_limited":
+                hours = max(
+                    1,
+                    int(round(self.settings.robinhood_login_429_backoff_seconds / 3600)),
+                )
                 self._reauth.message = (
-                    "Robinhood rate-limited device approval. Wait ~15 minutes, "
-                    "then Refresh RH auth again with the app ready to approve."
+                    f"Robinhood rate-limited device approval. Wait ~{hours}h, "
+                    "then Refresh RH auth once with the app ready to approve."
                 )
             else:
                 self._reauth.message = f"Reauth failed: {error_s}"

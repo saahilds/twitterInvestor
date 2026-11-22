@@ -107,7 +107,8 @@ class Settings(BaseSettings):
     bot_managers: str | None = None
     bot_managers_enable_all: bool = False
     robinhood_login_retry_seconds: int = 300
-    robinhood_login_429_backoff_seconds: int = 900
+    # Device-approval 429s need a long cool-down; 15 minutes just recreates the loop.
+    robinhood_login_429_backoff_seconds: int = 21600
     robinhood_session_validate_seconds: int = 120
     robinhood_pickle_max_age_days: float = 6.0
     robinhood_pickle_warn_days: float = 1.0

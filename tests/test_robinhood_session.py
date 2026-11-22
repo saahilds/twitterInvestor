@@ -35,7 +35,10 @@ def test_login_cooldown_blocks_rapid_retries() -> None:
     with (
         patch("app.execution.robinhood_session.rh") as rh_mock,
         patch("app.execution.robinhood_session.record_successful_auth"),
+        patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
+        patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
     ):
+        pickle_mock.return_value.is_file.return_value = True
         rh_mock.login.return_value = None
         first = manager.ensure_session()
         second = manager.ensure_session()
@@ -57,7 +60,10 @@ def test_successful_login_reuses_session_without_relogin() -> None:
     with (
         patch("app.execution.robinhood_session.rh") as rh_mock,
         patch("app.execution.robinhood_session.record_successful_auth") as record,
+        patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
+        patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
     ):
+        pickle_mock.return_value.is_file.return_value = True
         rh_mock.login.return_value = {"access_token": "abc"}
         assert manager.ensure_session() is None
         assert manager.ensure_session() is None
@@ -76,13 +82,37 @@ def test_rate_limited_login_uses_longer_backoff() -> None:
     with patch("app.execution.robinhood_session.seed_auth_meta_from_pickle_mtime"):
         manager = RobinhoodSessionManager(settings=settings, logger=logging.getLogger("test"))
 
-    with patch("app.execution.robinhood_session.rh") as rh_mock:
+    with (
+        patch("app.execution.robinhood_session.rh") as rh_mock,
+        patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
+        patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+        patch("app.execution.robinhood_session.set_login_block") as set_block,
+    ):
+        pickle_mock.return_value.is_file.return_value = True
         rh_mock.login.side_effect = Exception("429 Too Many Requests")
         error = manager.ensure_session()
         snap = manager.snapshot()
 
     assert error == "robinhood_rate_limited"
     assert snap.retry_in_seconds > 800
+    set_block.assert_called_once()
+
+
+def test_ensure_session_skips_login_without_pickle() -> None:
+    settings = Settings(robinhood_username="user", robinhood_password="pass")
+    with patch("app.execution.robinhood_session.seed_auth_meta_from_pickle_mtime"):
+        manager = RobinhoodSessionManager(settings=settings, logger=logging.getLogger("test"))
+
+    with (
+        patch("app.execution.robinhood_session.rh") as rh_mock,
+        patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
+        patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+    ):
+        pickle_mock.return_value.is_file.return_value = False
+        error = manager.ensure_session()
+
+    assert error == "robinhood_login_required"
+    rh_mock.login.assert_not_called()
 
 
 def test_reauth_single_flight_while_awaiting() -> None:

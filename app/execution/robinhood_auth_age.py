@@ -65,8 +65,42 @@ def write_auth_meta(updates: dict[str, Any]) -> dict[str, Any]:
 def record_successful_auth(*, moment: datetime | None = None) -> datetime:
     """Persist last successful Robinhood authentication time."""
     stamped = _as_utc(moment or datetime.now(timezone.utc))
-    write_auth_meta({"last_authenticated_at": stamped.isoformat()})
+    write_auth_meta(
+        {
+            "last_authenticated_at": stamped.isoformat(),
+            "login_blocked_until": None,
+            "login_blocked_reason": None,
+        }
+    )
     return stamped
+
+
+def set_login_block(*, until: datetime, reason: str) -> None:
+    """Persist an auto-login cool-down that survives process restarts."""
+    stamped = _as_utc(until)
+    write_auth_meta(
+        {
+            "login_blocked_until": stamped.isoformat(),
+            "login_blocked_reason": reason,
+        }
+    )
+
+
+def clear_login_block() -> None:
+    write_auth_meta({"login_blocked_until": None, "login_blocked_reason": None})
+
+
+def read_login_block(*, now: datetime | None = None) -> tuple[datetime | None, str | None]:
+    """Return (blocked_until, reason) when auto-login should stay off."""
+    meta = read_auth_meta()
+    until = _parse_iso(meta.get("login_blocked_until"))
+    if until is None:
+        return None, None
+    moment = _as_utc(now or datetime.now(timezone.utc))
+    if until <= moment:
+        return None, None
+    reason = meta.get("login_blocked_reason")
+    return until, str(reason) if reason else "robinhood_login_blocked"
 
 
 def seed_auth_meta_from_pickle_mtime() -> datetime | None:
