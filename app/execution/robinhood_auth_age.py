@@ -196,3 +196,23 @@ def should_alert_auth_status(status: AuthStatus) -> bool:
 
 def mark_auth_alert_sent(status: AuthStatus) -> None:
     write_auth_meta({"last_alert_status": status})
+
+
+SessionAlertStatus = Literal["logged_out", "rate_limited", "ok"]
+
+
+def should_alert_session_status(status: SessionAlertStatus) -> bool:
+    """Alert once per logged-out / rate-limited state until cleared by login."""
+    if status == "ok":
+        return False
+    meta = read_auth_meta()
+    return meta.get("last_session_alert_status") != status
+
+
+def mark_session_alert_sent(status: SessionAlertStatus) -> None:
+    write_auth_meta({"last_session_alert_status": status})
+
+
+def clear_session_alert() -> None:
+    """Reset so the next logout / rate-limit can notify again."""
+    write_auth_meta({"last_session_alert_status": "ok"})

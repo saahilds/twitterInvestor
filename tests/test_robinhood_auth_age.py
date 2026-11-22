@@ -57,6 +57,16 @@ def test_meta_write_read_and_alert_dedupe(token_dir: Path) -> None:
     assert auth_age.should_alert_auth_status("critical") is True
 
 
+def test_session_alert_dedupe(token_dir: Path) -> None:
+    assert auth_age.should_alert_session_status("ok") is False
+    assert auth_age.should_alert_session_status("logged_out") is True
+    auth_age.mark_session_alert_sent("logged_out")
+    assert auth_age.should_alert_session_status("logged_out") is False
+    assert auth_age.should_alert_session_status("rate_limited") is True
+    auth_age.clear_session_alert()
+    assert auth_age.should_alert_session_status("logged_out") is True
+
+
 def test_seed_from_pickle_mtime(token_dir: Path) -> None:
     pickle = token_dir / "robinhood.pickle"
     pickle.write_bytes(b"session")

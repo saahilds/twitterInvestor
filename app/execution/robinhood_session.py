@@ -11,6 +11,7 @@ from pathlib import Path
 from app.config.settings import Settings
 from app.execution.robinhood_auth_age import (
     clear_login_block,
+    clear_session_alert,
     pickle_path,
     read_login_block,
     record_successful_auth,
@@ -22,6 +23,11 @@ from app.execution.robinhood_device_approval import (
     RobinhoodVerificationTimeout,
     patch_device_approval,
     take_last_error,
+)
+from app.execution.robinhood_token_refresh import (
+    RobinhoodRefreshError,
+    refresh_session_from_pickle,
+    restore_session_from_pickle,
 )
 
 try:
@@ -160,7 +166,12 @@ class RobinhoodSessionManager:
             return self.reauth_snapshot()
 
     def ensure_session(self, *, force: bool = False) -> str | None:
-        """Return an error code when no session is available, else ``None``."""
+        """Return an error code when no session is available, else ``None``.
+
+        Non-force path never hits password + device approval. It restores the
+        pickle, exchanges ``refresh_token`` when needed, then stops. Only
+        ``force=True`` (dashboard reauth) may start a full login.
+        """
         if rh is None:
             return "robin_stocks_unavailable"
 
@@ -198,46 +209,19 @@ class RobinhoodSessionManager:
                 if self._session_recently_validated(now) or self._validate_existing_session(now):
                     return None
 
-        # Login can block on phone approval — do not hold the lock.
+        if not force:
+            # Silent path: pickle restore → OAuth refresh. Never password login.
+            # Network I/O runs outside the lock.
+            return self._ensure_session_via_refresh()
+
+        # force=True: password + device approval (can block — do not hold the lock).
         ok, error = self._perform_login()
         finished = time.monotonic()
         with self._lock:
             if ok:
                 self._mark_login_success(finished)
                 return None
-
-            self._state.logged_in = False
-            self._state.last_validated_at = None
-            self._state.consecutive_failures += 1
-            self._state.last_error = error or "robinhood_login_failed"
-            backoff = self._backoff_seconds(error, self._state.consecutive_failures)
-            self._state.blocked_until = finished + backoff
-            if self._state.last_error == "robinhood_rate_limited":
-                set_login_block(
-                    until=datetime.fromtimestamp(time.time() + backoff, tz=timezone.utc),
-                    reason="robinhood_rate_limited",
-                )
-            self.logger.warning(
-                "robinhood_login_failed",
-                extra={
-                    "event_type": "robinhood_auth",
-                    "error": self._state.last_error,
-                    "backoff_seconds": backoff,
-                    "consecutive_failures": self._state.consecutive_failures,
-                },
-            )
-            if self.alert_service is not None and getattr(
-                self.alert_service, "on_worker_errors", True
-            ):
-                send_sync = getattr(self.alert_service, "send_sync", None)
-                if callable(send_sync):
-                    send_sync(
-                        "robinhood_auth_failed",
-                        {"error": self._state.last_error},
-                        key=self._state.last_error or "auth",
-                    )
-            return self._state.last_error
-
+            return self._record_login_failure(error or "robinhood_login_failed", finished)
     def _run_reauth_job(self) -> None:
         backup = self._backup_and_clear_pickle()
         timeout = max(1, int(self.settings.robinhood_reauth_timeout_seconds))
@@ -382,10 +366,104 @@ class RobinhoodSessionManager:
         self._state.last_validated_at = finished
         self._state.blocked_until = 0.0
         record_successful_auth()
+        clear_session_alert()
         self.logger.info(
             "robinhood_login_success",
             extra={"event_type": "robinhood_auth"},
         )
+
+    def _ensure_session_via_refresh(self) -> str | None:
+        """Restore pickle / refresh_token without password or device approval."""
+        # 1) Re-apply pickle tokens and validate.
+        try:
+            restored = restore_session_from_pickle()
+        except Exception as exc:
+            restored = None
+            self.logger.debug(
+                "robinhood_pickle_restore_failed",
+                extra={"event_type": "robinhood_auth", "error": str(exc)},
+            )
+        if restored is not None:
+            now = time.monotonic()
+            with self._lock:
+                if self._validate_existing_session(now):
+                    self._mark_login_success(now)
+                    self.logger.info(
+                        "robinhood_session_restored_from_pickle",
+                        extra={"event_type": "robinhood_auth"},
+                    )
+                    return None
+
+        # 2) Exchange refresh_token (no phone). Rotates tokens in the pickle.
+        try:
+            refresh_session_from_pickle()
+        except RobinhoodRefreshError as exc:
+            error = exc.code if exc.code.startswith("robinhood_") else "robinhood_refresh_failed"
+            with self._lock:
+                return self._record_login_failure(error, time.monotonic(), alert=False)
+        except Exception as exc:
+            with self._lock:
+                return self._record_login_failure(
+                    classify_login_error(exc),
+                    time.monotonic(),
+                    alert=False,
+                )
+
+        now = time.monotonic()
+        with self._lock:
+            if self._validate_existing_session(now):
+                self._mark_login_success(now)
+                self.logger.info(
+                    "robinhood_session_refreshed",
+                    extra={"event_type": "robinhood_auth"},
+                )
+                return None
+            return self._record_login_failure(
+                "robinhood_login_required",
+                now,
+                alert=False,
+            )
+
+    def _record_login_failure(
+        self,
+        error: str,
+        finished: float,
+        *,
+        alert: bool = True,
+    ) -> str:
+        self._state.logged_in = False
+        self._state.last_validated_at = None
+        self._state.consecutive_failures += 1
+        self._state.last_error = error
+        backoff = self._backoff_seconds(error, self._state.consecutive_failures)
+        self._state.blocked_until = finished + backoff
+        if error == "robinhood_rate_limited":
+            set_login_block(
+                until=datetime.fromtimestamp(time.time() + backoff, tz=timezone.utc),
+                reason="robinhood_rate_limited",
+            )
+        self.logger.warning(
+            "robinhood_login_failed",
+            extra={
+                "event_type": "robinhood_auth",
+                "error": error,
+                "backoff_seconds": backoff,
+                "consecutive_failures": self._state.consecutive_failures,
+            },
+        )
+        # Password-login failures only: logged-out / refresh misses use the
+        # worker's low-noise session alert instead of spamming auth_failed.
+        if alert and self.alert_service is not None and getattr(
+            self.alert_service, "on_worker_errors", True
+        ):
+            send_sync = getattr(self.alert_service, "send_sync", None)
+            if callable(send_sync):
+                send_sync(
+                    "robinhood_auth_failed",
+                    {"error": error},
+                    key=error or "auth",
+                )
+        return error
 
     def _perform_login(self) -> tuple[bool, str | None]:
         mfa_code = None
@@ -397,6 +475,8 @@ class RobinhoodSessionManager:
         timeout = max(30, int(self.settings.robinhood_reauth_timeout_seconds))
         try:
             # Poll gently — aggressive get_prompts_status checks earn long 429s.
+            # store_session pickle load can fall through to password; force path
+            # is intentional device approval after dashboard reauth.
             with patch_device_approval(timeout_seconds=timeout, poll_seconds=15.0):
                 result = rh.login(
                     username=self.settings.robinhood_username,
