@@ -196,6 +196,40 @@ def test_reauth_single_flight_while_awaiting() -> None:
         assert manager.reauth_snapshot().status == "succeeded"
 
 
+def test_seed_device_token_pickle_from_stale(tmp_path, monkeypatch) -> None:
+    from app.execution.robinhood_token_refresh import save_pickle_session
+
+    settings = Settings(robinhood_username="user", robinhood_password="pass")
+    with patch("app.execution.robinhood_session.seed_auth_meta_from_pickle_mtime"):
+        manager = RobinhoodSessionManager(settings=settings, logger=logging.getLogger("test"))
+
+    live = tmp_path / "robinhood.pickle"
+    stale = tmp_path / "robinhood.pickle.stale.1795109059"
+    save_pickle_session(
+        {
+            "token_type": "Bearer",
+            "access_token": "old-access",
+            "refresh_token": "old-refresh",
+            "device_token": "device-keep-me",
+        },
+        stale,
+    )
+    monkeypatch.setattr("app.execution.robinhood_session.pickle_path", lambda: live)
+    monkeypatch.setattr(
+        RobinhoodSessionManager,
+        "_stale_pickle_path",
+        staticmethod(lambda: stale),
+    )
+
+    assert manager._seed_device_token_pickle(sources=[None, stale]) is True
+    from app.execution.robinhood_token_refresh import load_pickle_session
+
+    seeded = load_pickle_session(live)
+    assert seeded is not None
+    assert seeded["device_token"] == "device-keep-me"
+    assert seeded["access_token"] == "expired"
+
+
 def test_reauth_timeout_marks_failed() -> None:
     settings = Settings(
         robinhood_username="user",
@@ -218,7 +252,7 @@ def test_reauth_timeout_marks_failed() -> None:
     ):
         rh_mock.login.side_effect = hang_login
         manager.start_reauth()
-        deadline = time.time() + 5
+        deadline = time.time() + 12
         while time.time() < deadline:
             snap = manager.reauth_snapshot()
             if snap.status == "failed":

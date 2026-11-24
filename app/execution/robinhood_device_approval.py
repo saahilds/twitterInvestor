@@ -56,9 +56,14 @@ def validate_sheriff_id(
     *,
     timeout_seconds: int = 180,
     poll_seconds: float = 8.0,
-    max_empty_polls: int = 3,
+    max_empty_polls: int = 0,
 ) -> None:
-    """Poll Robinhood's sheriff / device-approval workflow until approved."""
+    """Poll Robinhood's sheriff / device-approval workflow until approved.
+
+    ``max_empty_polls``: abort after this many empty/429 responses. ``0`` means
+    keep waiting until ``timeout_seconds`` (preferred — early abort burned our
+    one reauth try while the user still had time to approve).
+    """
     # Import inside so tests can patch robin_stocks without importing it early.
     from robin_stocks.robinhood.helper import request_get, request_post
 
@@ -82,9 +87,10 @@ def validate_sheriff_id(
     deadline = time.monotonic() + max(30, int(timeout_seconds))
     empty_polls = 0
     prompt_started = False
+    poll = max(5.0, float(poll_seconds))
 
     while time.monotonic() < deadline:
-        time.sleep(poll_seconds)
+        time.sleep(poll)
         inquiries_response = request_get(inquiries_url)
         if not inquiries_response:
             empty_polls += 1
@@ -95,11 +101,12 @@ def validate_sheriff_id(
                     "empty_polls": empty_polls,
                 },
             )
-            if empty_polls >= max_empty_polls:
+            if max_empty_polls > 0 and empty_polls >= max_empty_polls:
                 raise RobinhoodRateLimitedError(
                     "429 Too Many Requests while polling Robinhood verification"
                 )
-            time.sleep(min(60.0, poll_seconds * empty_polls))
+            # Back off hard on empties/429s so one attempt doesn't dig the hole.
+            time.sleep(min(120.0, poll * max(1, empty_polls)))
             continue
 
         empty_polls = 0
@@ -121,7 +128,7 @@ def validate_sheriff_id(
                     f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
                 )
                 while time.monotonic() < deadline:
-                    time.sleep(poll_seconds)
+                    time.sleep(poll)
                     prompt_status = request_get(url=prompt_url)
                     status = _challenge_status(prompt_status)
                     if status == "validated":
@@ -135,11 +142,11 @@ def validate_sheriff_id(
                                 "empty_polls": empty_polls,
                             },
                         )
-                        if empty_polls >= max_empty_polls:
+                        if max_empty_polls > 0 and empty_polls >= max_empty_polls:
                             raise RobinhoodRateLimitedError(
                                 "429 Too Many Requests for get_prompts_status"
                             )
-                        time.sleep(min(60.0, poll_seconds * empty_polls))
+                        time.sleep(min(120.0, poll * max(1, empty_polls)))
                         continue
                     empty_polls = 0
                 else:
@@ -219,6 +226,7 @@ def _run_validate(
     *,
     timeout_seconds: int,
     poll_seconds: float,
+    max_empty_polls: int,
 ) -> None:
     try:
         validate_sheriff_id(
@@ -226,6 +234,7 @@ def _run_validate(
             workflow_id,
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
+            max_empty_polls=max_empty_polls,
         )
     except BaseException as exc:
         _set_last_error(exc)
@@ -237,6 +246,7 @@ def patch_device_approval(
     *,
     timeout_seconds: int = 180,
     poll_seconds: float = 8.0,
+    max_empty_polls: int = 0,
 ) -> Iterator[None]:
     """Patch robin_stocks device-approval validation for one login attempt."""
     import robin_stocks.robinhood.authentication as auth_mod
@@ -249,6 +259,7 @@ def patch_device_approval(
             workflow_id,
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
+            max_empty_polls=max_empty_polls,
         )
 
     auth_mod._validate_sherrif_id = _patched  # type: ignore[assignment]

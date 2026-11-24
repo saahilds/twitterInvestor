@@ -26,8 +26,10 @@ from app.execution.robinhood_device_approval import (
 )
 from app.execution.robinhood_token_refresh import (
     RobinhoodRefreshError,
+    load_pickle_session,
     refresh_session_from_pickle,
     restore_session_from_pickle,
+    save_pickle_session,
 )
 
 try:
@@ -224,6 +226,8 @@ class RobinhoodSessionManager:
             return self._record_login_failure(error or "robinhood_login_failed", finished)
     def _run_reauth_job(self) -> None:
         backup = self._backup_and_clear_pickle()
+        # Keep a stable device_token so RH doesn't treat every reauth as a new device.
+        self._seed_device_token_pickle(sources=[backup, self._stale_pickle_path()])
         timeout = max(1, int(self.settings.robinhood_reauth_timeout_seconds))
         finished: dict[str, object] = {}
 
@@ -237,7 +241,9 @@ class RobinhoodSessionManager:
 
         thread = threading.Thread(target=worker, name="robinhood-reauth-login", daemon=True)
         thread.start()
-        thread.join(timeout=timeout)
+        # Approval polling may sleep after a late 429; keep a buffer on long timeouts.
+        join_budget = timeout + (180 if timeout >= 60 else 5)
+        thread.join(timeout=join_budget)
 
         if thread.is_alive():
             with self._lock:
@@ -315,6 +321,66 @@ class RobinhoodSessionManager:
                 extra={"event_type": "robinhood_auth", "error": str(exc)},
             )
             return None
+
+    @staticmethod
+    def _stale_pickle_path() -> Path:
+        return pickle_path().with_name("robinhood.pickle.stale.1795109059")
+
+    def _seed_device_token_pickle(self, *, sources: list[Path | None]) -> bool:
+        """Write a placeholder pickle so robin_stocks reuses device_token on login."""
+        device_token: str | None = None
+        for source in sources:
+            if source is None or not source.is_file():
+                continue
+            try:
+                data = load_pickle_session(source)
+            except Exception:
+                data = None
+            if data and data.get("device_token"):
+                device_token = str(data["device_token"])
+                break
+            # load_pickle_session requires access+refresh; fall back to raw pickle.
+            try:
+                import pickle as _pickle
+
+                with source.open("rb") as handle:
+                    raw = _pickle.load(handle)
+                if isinstance(raw, dict) and raw.get("device_token"):
+                    device_token = str(raw["device_token"])
+                    break
+            except Exception:
+                continue
+
+        if not device_token:
+            self.logger.info(
+                "robinhood_device_token_seed_skipped",
+                extra={"event_type": "robinhood_auth"},
+            )
+            return False
+
+        try:
+            # Expired placeholders force password login, but keep device_token.
+            save_pickle_session(
+                {
+                    "token_type": "Bearer",
+                    "access_token": "expired",
+                    "refresh_token": "expired",
+                    "device_token": device_token,
+                },
+                path=pickle_path(),
+            )
+        except OSError as exc:
+            self.logger.warning(
+                "robinhood_device_token_seed_failed",
+                extra={"event_type": "robinhood_auth", "error": str(exc)},
+            )
+            return False
+
+        self.logger.info(
+            "robinhood_device_token_seeded",
+            extra={"event_type": "robinhood_auth"},
+        )
+        return True
 
     def _restore_pickle_backup(self, backup: Path | None) -> None:
         if backup is None or not backup.is_file():
@@ -473,11 +539,17 @@ class RobinhoodSessionManager:
             mfa_code = pyotp.TOTP(self.settings.robinhood_mfa_secret).now()
 
         timeout = max(30, int(self.settings.robinhood_reauth_timeout_seconds))
+        poll_seconds = max(5.0, float(self.settings.robinhood_reauth_poll_seconds))
+        max_empty = max(0, int(self.settings.robinhood_reauth_max_empty_polls))
         try:
             # Poll gently — aggressive get_prompts_status checks earn long 429s.
             # store_session pickle load can fall through to password; force path
             # is intentional device approval after dashboard reauth.
-            with patch_device_approval(timeout_seconds=timeout, poll_seconds=15.0):
+            with patch_device_approval(
+                timeout_seconds=timeout,
+                poll_seconds=poll_seconds,
+                max_empty_polls=max_empty,
+            ):
                 result = rh.login(
                     username=self.settings.robinhood_username,
                     password=self.settings.robinhood_password,

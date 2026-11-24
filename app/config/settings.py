@@ -116,7 +116,11 @@ class Settings(BaseSettings):
     robinhood_pickle_warn_days: float = 1.0
     # Proactively exchange refresh_token this many days before max age (no phone).
     robinhood_refresh_before_expiry_days: float = 2.0
-    robinhood_reauth_timeout_seconds: int = 180
+    # Give the phone tap enough time; early 429 abort was burning the one try.
+    robinhood_reauth_timeout_seconds: int = 420
+    robinhood_reauth_poll_seconds: float = 20.0
+    # 0 = wait until timeout instead of failing after N empty/429 polls.
+    robinhood_reauth_max_empty_polls: int = 0
     # How often maintenance may attempt a silent OAuth refresh (not password login).
     robinhood_refresh_check_seconds: int = 3600
 
