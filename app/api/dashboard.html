@@ -485,6 +485,13 @@
     <div id="errorBanner"></div>
     <div id="workerBanner"></div>
     <div id="reauthBanner"></div>
+    <div id="reauthActions" style="display:none;margin:0.5rem 0;flex-wrap:wrap;gap:0.5rem;align-items:center">
+      <button type="button" id="reauthConfirmBtn">I approved on phone</button>
+      <span id="reauthCodeRow" style="display:none;align-items:center;gap:0.35rem;flex-wrap:wrap">
+        <input id="reauthCodeInput" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="SMS/email code" maxlength="12" />
+        <button type="button" id="reauthCodeBtn">Submit code</button>
+      </span>
+    </div>
 
     <main>
       <section class="section" aria-label="Robinhood account">
@@ -1768,6 +1775,7 @@
     }
 
     let reauthInFlight = false;
+    let reauthConfirmSent = false;
     function setReauthBanner(text, cls) {
       const el = document.getElementById("reauthBanner");
       if (!text) {
@@ -1781,34 +1789,112 @@
       el.textContent = text;
     }
 
+    function setReauthActions({ showConfirm = false, showCode = false } = {}) {
+      const actions = document.getElementById("reauthActions");
+      const codeRow = document.getElementById("reauthCodeRow");
+      const confirmBtn = document.getElementById("reauthConfirmBtn");
+      const any = showConfirm || showCode;
+      actions.style.display = any ? "flex" : "none";
+      confirmBtn.style.display = showConfirm ? "inline-block" : "none";
+      codeRow.style.display = showCode ? "inline-flex" : "none";
+    }
+
     async function pollReauthStatus() {
       const res = await fetch("/robinhood/reauth/status");
       if (!res.ok) throw new Error(`reauth status ${res.status}`);
       return res.json();
     }
 
+    async function confirmRhApproval() {
+      const btn = document.getElementById("reauthConfirmBtn");
+      btn.disabled = true;
+      try {
+        const res = await fetch("/robinhood/reauth/confirm-approval", { method: "POST" });
+        const job = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(job.detail || `confirm ${res.status}`);
+        }
+        reauthConfirmSent = true;
+        setReauthBanner(job.message || "Approval recorded — finishing login…", "info");
+        setReauthActions({ showConfirm: false, showCode: !!job.code_needed });
+      } catch (err) {
+        setReauthBanner(String(err.message || err), "bad");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function submitRhReauthCode() {
+      const input = document.getElementById("reauthCodeInput");
+      const btn = document.getElementById("reauthCodeBtn");
+      const code = (input.value || "").trim();
+      if (!code) {
+        setReauthBanner("Enter the SMS/email code from Robinhood.", "bad");
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const res = await fetch("/robinhood/reauth/submit-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        const job = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(job.detail || `submit-code ${res.status}`);
+        }
+        input.value = "";
+        setReauthBanner(job.message || "Code submitted — finishing login…", "info");
+        setReauthActions({ showConfirm: false, showCode: false });
+      } catch (err) {
+        setReauthBanner(String(err.message || err), "bad");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function startRhReauth() {
       if (reauthInFlight) return;
       reauthInFlight = true;
+      reauthConfirmSent = false;
       const btn = document.getElementById("reauthBtn");
       btn.disabled = true;
-      setReauthBanner("Approve on your Robinhood app now…", "info");
+      setReauthActions();
+      setReauthBanner("Starting Robinhood reauth — watch for the app prompt…", "info");
       try {
         const start = await fetch("/robinhood/reauth", { method: "POST" });
         if (!start.ok) {
           const detail = await start.text();
           throw new Error(detail || `reauth ${start.status}`);
         }
-        const deadline = Date.now() + 200000;
+        // Match server reauth timeout (default 420s) plus a small buffer.
+        const deadline = Date.now() + 450000;
         while (Date.now() < deadline) {
           const job = await pollReauthStatus();
           if (job.status === "awaiting_approval") {
-            setReauthBanner(job.message || "Approve on your Robinhood app now…", "info");
+            const needConfirm = !!job.prompt_ready && !reauthConfirmSent;
+            const needCode = !!job.code_needed;
+            setReauthActions({ showConfirm: needConfirm, showCode: needCode });
+            if (needCode) {
+              setReauthBanner(
+                job.message || `Enter the ${job.challenge_type || "SMS/email"} code from Robinhood.`,
+                "info"
+              );
+            } else if (needConfirm) {
+              setReauthBanner(
+                "Approve in the Robinhood app, then click “I approved on phone”.",
+                "info"
+              );
+            } else {
+              setReauthBanner(job.message || "Waiting for Robinhood challenge…", "info");
+            }
           } else if (job.status === "succeeded") {
+            setReauthActions();
             setReauthBanner(job.message || "Robinhood auth refreshed.", "ok");
             await load();
             return;
           } else if (job.status === "failed") {
+            setReauthActions();
             setReauthBanner(job.message || job.error || "Reauth failed", "bad");
             return;
           } else if (job.status === "idle") {
@@ -1816,8 +1902,10 @@
           }
           await new Promise((r) => setTimeout(r, 2000));
         }
+        setReauthActions();
         setReauthBanner("Timed out waiting for approval. Try again.", "bad");
       } catch (err) {
+        setReauthActions();
         setReauthBanner(String(err.message || err), "bad");
       } finally {
         reauthInFlight = false;
@@ -1944,6 +2032,11 @@
     document.getElementById("pauseBtn").addEventListener("click", () => postControl("/pause"));
     document.getElementById("resumeBtn").addEventListener("click", () => postControl("/resume"));
     document.getElementById("reauthBtn").addEventListener("click", () => startRhReauth());
+    document.getElementById("reauthConfirmBtn").addEventListener("click", () => confirmRhApproval());
+    document.getElementById("reauthCodeBtn").addEventListener("click", () => submitRhReauthCode());
+    document.getElementById("reauthCodeInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitRhReauthCode();
+    });
     document.getElementById("restartBtn").addEventListener("click", () => restartBot());
     document.getElementById("tickerFilter").addEventListener("input", (e) => {
       renderTickerChips(e.target.value);

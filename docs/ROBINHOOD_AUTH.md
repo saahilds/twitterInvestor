@@ -33,11 +33,15 @@ What finally worked: **skip status poll**, operator **confirm-approval** (and SM
 ## Operator runbook (weekly reauth)
 
 1. Be at the PC with the Robinhood app ready (push + SMS).
-2. `POST /robinhood/reauth` (or dashboard **Refresh RH auth**).
-3. Watch `/robinhood/reauth/status` (or `/health` while `awaiting_approval`):
-   - `prompt_ready` → approve on phone, then `POST /robinhood/reauth/confirm-approval`.
-   - `code_needed` + `challenge_type` `sms`/`email` → `POST /robinhood/reauth/submit-code` with `{ "code": "..." }`.
-4. Success writes a real pickle and clears auth/session alert meta. Do **not** restart during market hours unless needed; a live session already holds tokens in memory.
+2. Prefer dashboard **Refresh RH auth** (or `POST /robinhood/reauth` / `scripts/rh_reauth.sh`).
+3. When the app prompt appears:
+   - Dashboard: approve on phone, then click **I approved on phone** (required — status polling is skipped by default).
+   - API: `POST /robinhood/reauth/confirm-approval` once `prompt_ready` is true.
+   - `scripts/rh_reauth.sh` posts confirm-approval automatically when `prompt_ready` flips.
+4. If RH sends SMS/email instead:
+   - Dashboard: enter the code and **Submit code**.
+   - API: `POST /robinhood/reauth/submit-code` with `{ "code": "..." }`.
+5. Success writes a real pickle and clears auth/session alert meta. Do **not** restart during market hours unless needed; a live session already holds tokens in memory.
 
 If you see sustained 429s: stop retrying. Wait for the login block (`robinhood_login_429_backoff_seconds`, default 6h) or clear it only when you know RH has cooled down. Prefer one deliberate reauth with confirm-approval over many automatic attempts.
 
