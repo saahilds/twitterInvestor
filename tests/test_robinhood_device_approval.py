@@ -60,7 +60,18 @@ def test_validate_sheriff_raises_on_repeated_empty_prompt_polls() -> None:
                 timeout_seconds=60,
                 poll_seconds=0.01,
                 max_empty_polls=3,
+                skip_status_poll=False,
             )
+
+
+def test_user_confirm_signal_requires_prompt_ready() -> None:
+    from app.execution import robinhood_device_approval as dap
+
+    dap.clear_approval_signals()
+    assert dap.signal_approval_confirmed() is False
+    dap._prompt_ready.set()
+    assert dap.signal_approval_confirmed() is True
+    assert dap.is_approval_confirmed() is True
 
 
 def test_perform_login_uses_device_approval_patch() -> None:

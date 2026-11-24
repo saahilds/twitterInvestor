@@ -1,16 +1,15 @@
-"""Resilient Robinhood device-approval polling.
+"""Resilient Robinhood device-approval handling.
 
 ``robin_stocks`` polls ``get_prompts_status`` in a bare ``while True`` and
-crashes with ``'NoneType' object is not subscriptable`` when Robinhood returns
-429 (``request_get`` yields ``None``). That leaves the bot hammering login and
-stuck in cooldown.
-
-We temporarily replace ``_validate_sherrif_id`` for the duration of ``login``.
+crashes / 429-loops when Robinhood rate-limits that endpoint. We patch
+``_validate_sherrif_id`` and prefer an explicit "already approved" signal over
+hammering ``get_prompts_status``.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -21,6 +20,11 @@ logger = logging.getLogger("trading_bot")
 # robin_stocks.login() swallows verification exceptions and returns None.
 # Stash the last error so our session manager can classify it.
 _last_error: BaseException | None = None
+
+# Set by POST /robinhood/reauth/confirm-approval when the user has tapped Yes.
+_approval_confirmed = threading.Event()
+# Set once Robinhood has issued a device-approval prompt for this login.
+_prompt_ready = threading.Event()
 
 
 class RobinhoodRateLimitedError(RuntimeError):
@@ -43,6 +47,31 @@ def _set_last_error(exc: BaseException) -> None:
     _last_error = exc
 
 
+def clear_approval_signals() -> None:
+    _approval_confirmed.clear()
+    _prompt_ready.clear()
+
+
+def signal_approval_confirmed() -> bool:
+    """Mark the in-flight device prompt as approved (skip get_prompts_status)."""
+    if not _prompt_ready.is_set():
+        return False
+    _approval_confirmed.set()
+    logger.info(
+        "robinhood_approval_confirmed_by_user",
+        extra={"event_type": "robinhood_auth"},
+    )
+    return True
+
+
+def is_prompt_ready() -> bool:
+    return _prompt_ready.is_set()
+
+
+def is_approval_confirmed() -> bool:
+    return _approval_confirmed.is_set()
+
+
 def _challenge_status(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -57,18 +86,19 @@ def validate_sheriff_id(
     timeout_seconds: int = 180,
     poll_seconds: float = 8.0,
     max_empty_polls: int = 0,
+    skip_status_poll: bool = True,
 ) -> None:
-    """Poll Robinhood's sheriff / device-approval workflow until approved.
+    """Drive Robinhood's sheriff / device-approval workflow until approved.
 
-    ``max_empty_polls``: abort after this many empty/429 responses. ``0`` means
-    keep waiting until ``timeout_seconds`` (preferred — early abort burned our
-    one reauth try while the user still had time to approve).
+    When ``skip_status_poll`` is true (default), after a device prompt is issued
+    we wait for ``signal_approval_confirmed()`` instead of polling
+    ``get_prompts_status`` (the endpoint that has been 429'ing us for days).
     """
-    # Import inside so tests can patch robin_stocks without importing it early.
     from robin_stocks.robinhood.helper import request_get, request_post
 
     global _last_error
     _last_error = None
+    clear_approval_signals()
     print("Starting verification process...")
     pathfinder_url = "https://api.robinhood.com/pathfinder/user_machine/"
     machine_payload = {
@@ -105,7 +135,6 @@ def validate_sheriff_id(
                 raise RobinhoodRateLimitedError(
                     "429 Too Many Requests while polling Robinhood verification"
                 )
-            # Back off hard on empties/429s so one attempt doesn't dig the hole.
             time.sleep(min(120.0, poll * max(1, empty_polls)))
             continue
 
@@ -123,35 +152,25 @@ def validate_sheriff_id(
             if challenge_type == "prompt" and challenge_id:
                 if not prompt_started:
                     print("Check robinhood app for device approvals method...")
+                    print(
+                        "After approving, POST /robinhood/reauth/confirm-approval "
+                        "(do not rely on get_prompts_status)."
+                    )
                     prompt_started = True
-                prompt_url = (
-                    f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
-                )
-                while time.monotonic() < deadline:
-                    time.sleep(poll)
-                    prompt_status = request_get(url=prompt_url)
-                    status = _challenge_status(prompt_status)
-                    if status == "validated":
-                        break
-                    if prompt_status is None:
-                        empty_polls += 1
-                        logger.warning(
-                            "robinhood_device_prompt_empty",
-                            extra={
-                                "event_type": "robinhood_auth",
-                                "empty_polls": empty_polls,
-                            },
-                        )
-                        if max_empty_polls > 0 and empty_polls >= max_empty_polls:
-                            raise RobinhoodRateLimitedError(
-                                "429 Too Many Requests for get_prompts_status"
-                            )
-                        time.sleep(min(120.0, poll * max(1, empty_polls)))
-                        continue
-                    empty_polls = 0
+                    _prompt_ready.set()
+                    logger.info(
+                        "robinhood_device_prompt_ready",
+                        extra={"event_type": "robinhood_auth"},
+                    )
+
+                if skip_status_poll:
+                    _wait_for_user_approval(deadline=deadline, poll_seconds=poll)
                 else:
-                    raise RobinhoodVerificationTimeout(
-                        f"Device approval not confirmed within {timeout_seconds}s"
+                    _poll_prompt_status(
+                        challenge_id=str(challenge_id),
+                        deadline=deadline,
+                        poll_seconds=poll,
+                        max_empty_polls=max_empty_polls,
                     )
                 break
 
@@ -160,7 +179,6 @@ def validate_sheriff_id(
                 break
 
             if challenge_type in {"sms", "email"} and challenge_status == "issued":
-                # Non-interactive bot: cannot collect SMS/email codes.
                 raise RobinhoodVerificationTimeout(
                     f"Robinhood requested {challenge_type} verification; "
                     "use device approval in the app instead"
@@ -171,9 +189,74 @@ def validate_sheriff_id(
             f"Device approval not confirmed within {timeout_seconds}s"
         )
 
-    # Confirm workflow approval (same as upstream, with None/timeout guards).
+    _finish_workflow(
+        machine_id=str(machine_id),
+        deadline=deadline,
+        poll_seconds=poll,
+    )
+
+
+def _wait_for_user_approval(*, deadline: float, poll_seconds: float) -> None:
+    """Block until confirm-approval is signaled (no get_prompts_status)."""
+    logger.info(
+        "robinhood_waiting_for_approval_confirm",
+        extra={"event_type": "robinhood_auth"},
+    )
+    while time.monotonic() < deadline:
+        remaining = max(0.5, deadline - time.monotonic())
+        if _approval_confirmed.wait(timeout=min(poll_seconds, remaining)):
+            print("Approval confirmed by operator — continuing login workflow...")
+            return
+    raise RobinhoodVerificationTimeout(
+        "Device approval not confirmed within timeout "
+        "(POST /robinhood/reauth/confirm-approval after tapping Yes in the app)"
+    )
+
+
+def _poll_prompt_status(
+    *,
+    challenge_id: str,
+    deadline: float,
+    poll_seconds: float,
+    max_empty_polls: int,
+) -> None:
+    from robin_stocks.robinhood.helper import request_get
+
+    prompt_url = f"https://api.robinhood.com/push/{challenge_id}/get_prompts_status/"
+    empty_polls = 0
+    while time.monotonic() < deadline:
+        if _approval_confirmed.is_set():
+            print("Approval confirmed by operator — skipping status poll...")
+            return
+        time.sleep(poll_seconds)
+        prompt_status = request_get(url=prompt_url)
+        status = _challenge_status(prompt_status)
+        if status == "validated":
+            return
+        if prompt_status is None:
+            empty_polls += 1
+            logger.warning(
+                "robinhood_device_prompt_empty",
+                extra={
+                    "event_type": "robinhood_auth",
+                    "empty_polls": empty_polls,
+                },
+            )
+            if max_empty_polls > 0 and empty_polls >= max_empty_polls:
+                raise RobinhoodRateLimitedError(
+                    "429 Too Many Requests for get_prompts_status"
+                )
+            time.sleep(min(120.0, poll_seconds * max(1, empty_polls)))
+            continue
+        empty_polls = 0
+    raise RobinhoodVerificationTimeout("Device approval not confirmed within timeout")
+
+
+def _finish_workflow(*, machine_id: str, deadline: float, poll_seconds: float) -> None:
+    from robin_stocks.robinhood.helper import request_post
+
     inquiries_url = f"https://api.robinhood.com/pathfinder/inquiries/{machine_id}/user_view/"
-    retry_attempts = 5
+    retry_attempts = 8
     while time.monotonic() < deadline and retry_attempts > 0:
         try:
             inquiries_payload = {"sequence": 0, "user_input": {"status": "continue"}}
@@ -215,8 +298,7 @@ def validate_sheriff_id(
         time.sleep(poll_seconds)
         retry_attempts -= 1
 
-    # Upstream assumes approval after retries; keep that soft fallback so a
-    # completed phone tap still finishes login when the status endpoint lags.
+    # Soft fallback — phone tap may have completed even if status JSON lags.
     print("Max workflow polls reached. Assuming login approved and proceeding.")
 
 
@@ -227,6 +309,7 @@ def _run_validate(
     timeout_seconds: int,
     poll_seconds: float,
     max_empty_polls: int,
+    skip_status_poll: bool,
 ) -> None:
     try:
         validate_sheriff_id(
@@ -235,6 +318,7 @@ def _run_validate(
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
             max_empty_polls=max_empty_polls,
+            skip_status_poll=skip_status_poll,
         )
     except BaseException as exc:
         _set_last_error(exc)
@@ -247,11 +331,13 @@ def patch_device_approval(
     timeout_seconds: int = 180,
     poll_seconds: float = 8.0,
     max_empty_polls: int = 0,
+    skip_status_poll: bool = True,
 ) -> Iterator[None]:
     """Patch robin_stocks device-approval validation for one login attempt."""
     import robin_stocks.robinhood.authentication as auth_mod
 
     original = auth_mod._validate_sherrif_id
+    clear_approval_signals()
 
     def _patched(device_token: str, workflow_id: str) -> None:
         _run_validate(
@@ -260,6 +346,7 @@ def patch_device_approval(
             timeout_seconds=timeout_seconds,
             poll_seconds=poll_seconds,
             max_empty_polls=max_empty_polls,
+            skip_status_poll=skip_status_poll,
         )
 
     auth_mod._validate_sherrif_id = _patched  # type: ignore[assignment]

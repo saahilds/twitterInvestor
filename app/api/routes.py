@@ -256,6 +256,22 @@ def create_router(
             message=job.message,
         )
 
+    @router.post("/robinhood/reauth/confirm-approval", response_model=RobinhoodReauthStatusResponse)
+    async def confirm_robinhood_reauth_approval() -> RobinhoodReauthStatusResponse:
+        """Operator confirms the phone prompt was approved; skips get_prompts_status."""
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        job = await asyncio.to_thread(rh_session.confirm_reauth_approval)
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
+        )
+
     @router.get("/tweets", response_model=list[TweetRead])
     async def list_tweets(limit: int = Query(default=50, ge=1, le=200)) -> list[TweetRead]:
         with session_factory() as db:

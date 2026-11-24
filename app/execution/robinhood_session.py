@@ -21,7 +21,9 @@ from app.execution.robinhood_auth_age import (
 from app.execution.robinhood_device_approval import (
     RobinhoodRateLimitedError,
     RobinhoodVerificationTimeout,
+    is_prompt_ready,
     patch_device_approval,
+    signal_approval_confirmed,
     take_last_error,
 )
 from app.execution.robinhood_token_refresh import (
@@ -157,7 +159,10 @@ class RobinhoodSessionManager:
             self._reauth.started_at = datetime.now(timezone.utc)
             self._reauth.finished_at = None
             self._reauth.error = None
-            self._reauth.message = "Approve the login request in the Robinhood app now."
+            self._reauth.message = (
+                "Approve in the Robinhood app, then confirm via "
+                "POST /robinhood/reauth/confirm-approval."
+            )
             thread = threading.Thread(
                 target=self._run_reauth_job,
                 name="robinhood-reauth",
@@ -166,6 +171,30 @@ class RobinhoodSessionManager:
             self._reauth_thread = thread
             thread.start()
             return self.reauth_snapshot()
+
+    def confirm_reauth_approval(self) -> ReauthJobSnapshot:
+        """Operator asserts the phone prompt was approved; skip status polling."""
+        with self._lock:
+            if self._reauth.status != "awaiting_approval":
+                self._reauth.message = (
+                    f"No reauth awaiting approval (status={self._reauth.status})."
+                )
+                return self.reauth_snapshot()
+
+        if not is_prompt_ready():
+            with self._lock:
+                self._reauth.message = (
+                    "Prompt not issued yet — wait for the Robinhood app notification, "
+                    "approve it, then confirm again."
+                )
+            return self.reauth_snapshot()
+
+        if signal_approval_confirmed():
+            with self._lock:
+                self._reauth.message = (
+                    "Approval recorded — finishing login without get_prompts_status."
+                )
+        return self.reauth_snapshot()
 
     def ensure_session(self, *, force: bool = False) -> str | None:
         """Return an error code when no session is available, else ``None``.
@@ -541,14 +570,14 @@ class RobinhoodSessionManager:
         timeout = max(30, int(self.settings.robinhood_reauth_timeout_seconds))
         poll_seconds = max(5.0, float(self.settings.robinhood_reauth_poll_seconds))
         max_empty = max(0, int(self.settings.robinhood_reauth_max_empty_polls))
+        skip_status = bool(self.settings.robinhood_reauth_skip_status_poll)
         try:
-            # Poll gently — aggressive get_prompts_status checks earn long 429s.
-            # store_session pickle load can fall through to password; force path
-            # is intentional device approval after dashboard reauth.
+            # Prefer confirm-approval over get_prompts_status (sustained 429s).
             with patch_device_approval(
                 timeout_seconds=timeout,
                 poll_seconds=poll_seconds,
                 max_empty_polls=max_empty,
+                skip_status_poll=skip_status,
             ):
                 result = rh.login(
                     username=self.settings.robinhood_username,

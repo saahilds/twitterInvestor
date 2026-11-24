@@ -121,6 +121,8 @@ class Settings(BaseSettings):
     robinhood_reauth_poll_seconds: float = 20.0
     # 0 = wait until timeout instead of failing after N empty/429 polls.
     robinhood_reauth_max_empty_polls: int = 0
+    # Skip get_prompts_status (429 hotspot); wait for /robinhood/reauth/confirm-approval.
+    robinhood_reauth_skip_status_poll: bool = True
     # How often maintenance may attempt a silent OAuth refresh (not password login).
     robinhood_refresh_check_seconds: int = 3600
 
