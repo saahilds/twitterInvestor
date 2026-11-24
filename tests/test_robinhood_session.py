@@ -24,6 +24,14 @@ def test_classify_verification_error() -> None:
     )
 
 
+_USABLE_PICKLE = {
+    "token_type": "Bearer",
+    "access_token": "access",
+    "refresh_token": "refresh",
+    "device_token": "device",
+}
+
+
 def test_login_cooldown_blocks_rapid_retries() -> None:
     settings = Settings(
         robinhood_username="user",
@@ -38,6 +46,10 @@ def test_login_cooldown_blocks_rapid_retries() -> None:
         patch("app.execution.robinhood_session.record_successful_auth"),
         patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
         patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+        patch(
+            "app.execution.robinhood_session.load_pickle_session",
+            return_value=_USABLE_PICKLE,
+        ),
         patch(
             "app.execution.robinhood_session.restore_session_from_pickle",
             return_value=None,
@@ -72,6 +84,10 @@ def test_successful_refresh_reuses_session_without_password_login() -> None:
         patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
         patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
         patch(
+            "app.execution.robinhood_session.load_pickle_session",
+            return_value=_USABLE_PICKLE,
+        ),
+        patch(
             "app.execution.robinhood_session.restore_session_from_pickle",
             return_value={"access_token": "abc"},
         ),
@@ -94,6 +110,10 @@ def test_non_force_never_calls_password_login() -> None:
         patch("app.execution.robinhood_session.rh") as rh_mock,
         patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
         patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+        patch(
+            "app.execution.robinhood_session.load_pickle_session",
+            return_value=_USABLE_PICKLE,
+        ),
         patch(
             "app.execution.robinhood_session.restore_session_from_pickle",
             return_value=None,
@@ -126,6 +146,10 @@ def test_rate_limited_refresh_uses_longer_backoff() -> None:
         patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
         patch("app.execution.robinhood_session.set_login_block") as set_block,
         patch(
+            "app.execution.robinhood_session.load_pickle_session",
+            return_value=_USABLE_PICKLE,
+        ),
+        patch(
             "app.execution.robinhood_session.restore_session_from_pickle",
             return_value=None,
         ),
@@ -150,10 +174,9 @@ def test_ensure_session_skips_login_without_pickle() -> None:
 
     with (
         patch("app.execution.robinhood_session.rh") as rh_mock,
-        patch("app.execution.robinhood_session.pickle_path") as pickle_mock,
         patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+        patch("app.execution.robinhood_session.load_pickle_session", return_value=None),
     ):
-        pickle_mock.return_value.is_file.return_value = False
         error = manager.ensure_session()
 
     assert error == "robinhood_login_required"
@@ -196,6 +219,39 @@ def test_reauth_single_flight_while_awaiting() -> None:
         assert manager.reauth_snapshot().status == "succeeded"
 
 
+def test_ensure_session_skips_placeholder_without_cooldown() -> None:
+    settings = Settings(robinhood_username="user", robinhood_password="pass")
+    with patch("app.execution.robinhood_session.seed_auth_meta_from_pickle_mtime"):
+        manager = RobinhoodSessionManager(settings=settings, logger=logging.getLogger("test"))
+
+    placeholder = {
+        "token_type": "Bearer",
+        "access_token": "__placeholder__",
+        "refresh_token": "__placeholder__",
+        "device_token": "device-1",
+        "placeholder": True,
+    }
+    with (
+        patch("app.execution.robinhood_session.rh") as rh_mock,
+        patch("app.execution.robinhood_session.read_login_block", return_value=(None, None)),
+        patch(
+            "app.execution.robinhood_session.load_pickle_session",
+            return_value=placeholder,
+        ),
+        patch(
+            "app.execution.robinhood_session.refresh_session_from_pickle",
+        ) as refresh_mock,
+    ):
+        error = manager.ensure_session()
+
+    assert error == "robinhood_login_required"
+    rh_mock.login.assert_not_called()
+    refresh_mock.assert_not_called()
+    snap = manager.snapshot()
+    assert snap.logged_in is False
+    assert snap.retry_in_seconds == 0
+
+
 def test_seed_device_token_pickle_from_stale(tmp_path, monkeypatch) -> None:
     from app.execution.robinhood_token_refresh import save_pickle_session
 
@@ -227,7 +283,8 @@ def test_seed_device_token_pickle_from_stale(tmp_path, monkeypatch) -> None:
     seeded = load_pickle_session(live)
     assert seeded is not None
     assert seeded["device_token"] == "device-keep-me"
-    assert seeded["access_token"] == "expired"
+    assert seeded["access_token"] == "__placeholder__"
+    assert seeded.get("placeholder") is True
 
 
 def test_reauth_timeout_marks_failed() -> None:

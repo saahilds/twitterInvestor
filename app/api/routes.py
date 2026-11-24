@@ -174,14 +174,25 @@ def create_router(
                 "robinhood_auth_refresh_due_at": None,
                 "robinhood_auth_status": None,
                 "robinhood_reauth_status": None,
+                "robinhood_reauth_prompt_ready": None,
+                "robinhood_reauth_code_needed": None,
+                "robinhood_reauth_challenge_type": None,
             }
         age = compute_auth_age(
             max_age_days=settings.robinhood_pickle_max_age_days,
             warn_days=settings.robinhood_pickle_warn_days,
         )
         reauth_status = None
+        prompt_ready = None
+        code_needed = None
+        challenge_type = None
         if rh_session is not None:
-            reauth_status = rh_session.reauth_snapshot().status
+            job = rh_session.reauth_snapshot()
+            reauth_status = job.status
+            if job.status == "awaiting_approval":
+                prompt_ready = job.prompt_ready
+                code_needed = job.code_needed
+                challenge_type = job.challenge_type
         return {
             "robinhood_auth_last_at": age.last_authenticated_at,
             "robinhood_auth_age_days": age.age_days,
@@ -189,7 +200,22 @@ def create_router(
             "robinhood_auth_refresh_due_at": age.refresh_due_at,
             "robinhood_auth_status": age.status,
             "robinhood_reauth_status": reauth_status,
+            "robinhood_reauth_prompt_ready": prompt_ready,
+            "robinhood_reauth_code_needed": code_needed,
+            "robinhood_reauth_challenge_type": challenge_type,
         }
+
+    def _reauth_status_response(job) -> RobinhoodReauthStatusResponse:
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
+            prompt_ready=bool(getattr(job, "prompt_ready", False)),
+            code_needed=bool(getattr(job, "code_needed", False)),
+            challenge_type=getattr(job, "challenge_type", None),
+        )
 
     def _health_response(*, active_manager: str, snapshot) -> HealthResponse:
         session = _session_snapshot()
@@ -234,13 +260,7 @@ def create_router(
         if not settings.robinhood_username or not settings.robinhood_password:
             raise HTTPException(status_code=400, detail="missing_robinhood_credentials")
         job = await asyncio.to_thread(rh_session.start_reauth)
-        return RobinhoodReauthStatusResponse(
-            status=job.status,
-            started_at=job.started_at,
-            finished_at=job.finished_at,
-            error=job.error,
-            message=job.message,
-        )
+        return _reauth_status_response(job)
 
     @router.get("/robinhood/reauth/status", response_model=RobinhoodReauthStatusResponse)
     async def robinhood_reauth_status() -> RobinhoodReauthStatusResponse:
@@ -249,13 +269,7 @@ def create_router(
         if rh_session is None:
             raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
         job = rh_session.reauth_snapshot()
-        return RobinhoodReauthStatusResponse(
-            status=job.status,
-            started_at=job.started_at,
-            finished_at=job.finished_at,
-            error=job.error,
-            message=job.message,
-        )
+        return _reauth_status_response(job)
 
     @router.post("/robinhood/reauth/confirm-approval", response_model=RobinhoodReauthStatusResponse)
     async def confirm_robinhood_reauth_approval() -> RobinhoodReauthStatusResponse:
@@ -265,13 +279,7 @@ def create_router(
         if rh_session is None:
             raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
         job = await asyncio.to_thread(rh_session.confirm_reauth_approval)
-        return RobinhoodReauthStatusResponse(
-            status=job.status,
-            started_at=job.started_at,
-            finished_at=job.finished_at,
-            error=job.error,
-            message=job.message,
-        )
+        return _reauth_status_response(job)
 
     @router.post("/robinhood/reauth/submit-code", response_model=RobinhoodReauthStatusResponse)
     async def submit_robinhood_reauth_code(
@@ -283,13 +291,7 @@ def create_router(
         if rh_session is None:
             raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
         job = await asyncio.to_thread(rh_session.submit_reauth_code, body.code)
-        return RobinhoodReauthStatusResponse(
-            status=job.status,
-            started_at=job.started_at,
-            finished_at=job.finished_at,
-            error=job.error,
-            message=job.message,
-        )
+        return _reauth_status_response(job)
 
     @router.get("/tweets", response_model=list[TweetRead])
     async def list_tweets(limit: int = Query(default=50, ge=1, le=200)) -> list[TweetRead]:

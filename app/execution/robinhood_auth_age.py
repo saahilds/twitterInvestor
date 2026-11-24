@@ -70,6 +70,8 @@ def record_successful_auth(*, moment: datetime | None = None) -> datetime:
             "last_authenticated_at": stamped.isoformat(),
             "login_blocked_until": None,
             "login_blocked_reason": None,
+            "last_alert_status": "ok",
+            "last_session_alert_status": "ok",
         }
     )
     return stamped

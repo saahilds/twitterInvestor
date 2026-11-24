@@ -21,6 +21,7 @@ from app.execution.robinhood_auth_age import (
 from app.execution.robinhood_device_approval import (
     RobinhoodRateLimitedError,
     RobinhoodVerificationTimeout,
+    is_approval_confirmed,
     is_code_needed,
     is_prompt_ready,
     patch_device_approval,
@@ -31,10 +32,11 @@ from app.execution.robinhood_device_approval import (
 )
 from app.execution.robinhood_token_refresh import (
     RobinhoodRefreshError,
+    is_placeholder_session,
     load_pickle_session,
     refresh_session_from_pickle,
     restore_session_from_pickle,
-    save_pickle_session,
+    save_device_token_placeholder,
 )
 
 try:
@@ -68,6 +70,9 @@ class ReauthJobSnapshot:
     finished_at: datetime | None
     error: str | None
     message: str | None
+    prompt_ready: bool = False
+    code_needed: bool = False
+    challenge_type: str | None = None
 
 
 @dataclass
@@ -119,6 +124,7 @@ class RobinhoodSessionManager:
             )
 
     def reauth_snapshot(self) -> ReauthJobSnapshot:
+        progress = self.reauth_progress()
         with self._lock:
             return ReauthJobSnapshot(
                 status=self._reauth.status,
@@ -126,7 +132,23 @@ class RobinhoodSessionManager:
                 finished_at=self._reauth.finished_at,
                 error=self._reauth.error,
                 message=self._reauth.message,
+                prompt_ready=bool(progress["prompt_ready"]),
+                code_needed=bool(progress["code_needed"]),
+                challenge_type=(
+                    str(progress["challenge_type"])
+                    if progress["challenge_type"] is not None
+                    else None
+                ),
             )
+
+    def reauth_progress(self) -> dict[str, bool | str | None]:
+        """Operator-facing flags for the in-flight reauth challenge."""
+        return {
+            "prompt_ready": is_prompt_ready(),
+            "approval_confirmed": is_approval_confirmed(),
+            "code_needed": is_code_needed(),
+            "challenge_type": pending_challenge_type(),
+        }
 
     def invalidate(self, *, reason: str | None = None) -> None:
         with self._lock:
@@ -255,15 +277,22 @@ class RobinhoodSessionManager:
                     self._log_cooldown(now)
                     return self._state.last_error
 
-            # No saved session: never auto-trigger device approval. Only explicit
-            # dashboard /robinhood/reauth (force=True) may start a fresh login.
-            if not force and not pickle_path().is_file():
-                self._state.last_error = "robinhood_login_required"
-                self.logger.warning(
-                    "robinhood_login_skipped_no_pickle",
-                    extra={"event_type": "robinhood_auth"},
-                )
-                return "robinhood_login_required"
+            # No usable OAuth session: never auto-trigger device approval.
+            # Placeholder pickles only preserve device_token for explicit reauth.
+            if not force:
+                session_data = load_pickle_session()
+                if session_data is None or is_placeholder_session(session_data):
+                    self._state.last_error = "robinhood_login_required"
+                    self.logger.warning(
+                        "robinhood_login_skipped_no_usable_session",
+                        extra={
+                            "event_type": "robinhood_auth",
+                            "placeholder": bool(
+                                session_data and is_placeholder_session(session_data)
+                            ),
+                        },
+                    )
+                    return "robinhood_login_required"
 
             if not force and self._state.logged_in:
                 if self._session_recently_validated(now) or self._validate_existing_session(now):
@@ -282,6 +311,7 @@ class RobinhoodSessionManager:
                 self._mark_login_success(finished)
                 return None
             return self._record_login_failure(error or "robinhood_login_failed", finished)
+
     def _run_reauth_job(self) -> None:
         backup = self._backup_and_clear_pickle()
         # Keep a stable device_token so RH doesn't treat every reauth as a new device.
@@ -417,16 +447,9 @@ class RobinhoodSessionManager:
             return False
 
         try:
-            # Expired placeholders force password login, but keep device_token.
-            save_pickle_session(
-                {
-                    "token_type": "Bearer",
-                    "access_token": "expired",
-                    "refresh_token": "expired",
-                    "device_token": device_token,
-                },
-                path=pickle_path(),
-            )
+            # Placeholder forces password login in robin_stocks, keeps device_token,
+            # and is ignored by silent OAuth refresh (no invalid_grant spam).
+            save_device_token_placeholder(device_token, path=pickle_path())
         except OSError as exc:
             self.logger.warning(
                 "robinhood_device_token_seed_failed",
@@ -523,8 +546,15 @@ class RobinhoodSessionManager:
             refresh_session_from_pickle()
         except RobinhoodRefreshError as exc:
             error = exc.code if exc.code.startswith("robinhood_") else "robinhood_refresh_failed"
+            # invalid_grant / placeholder → need phone reauth, not a cool-down spiral.
+            apply_backoff = error == "robinhood_rate_limited"
             with self._lock:
-                return self._record_login_failure(error, time.monotonic(), alert=False)
+                return self._record_login_failure(
+                    error,
+                    time.monotonic(),
+                    alert=False,
+                    apply_backoff=apply_backoff,
+                )
         except Exception as exc:
             with self._lock:
                 return self._record_login_failure(
@@ -546,6 +576,7 @@ class RobinhoodSessionManager:
                 "robinhood_login_required",
                 now,
                 alert=False,
+                apply_backoff=False,
             )
 
     def _record_login_failure(
@@ -554,12 +585,13 @@ class RobinhoodSessionManager:
         finished: float,
         *,
         alert: bool = True,
+        apply_backoff: bool = True,
     ) -> str:
         self._state.logged_in = False
         self._state.last_validated_at = None
         self._state.consecutive_failures += 1
         self._state.last_error = error
-        backoff = self._backoff_seconds(error, self._state.consecutive_failures)
+        backoff = self._backoff_seconds(error, self._state.consecutive_failures) if apply_backoff else 0.0
         self._state.blocked_until = finished + backoff
         if error == "robinhood_rate_limited":
             set_login_block(
