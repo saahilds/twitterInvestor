@@ -427,6 +427,12 @@ class BotOrchestrator:
                 clear_session_alert()
                 return
 
+            # Intentional dashboard reauth clears logged_in mid-flight; don't
+            # spam "not logged in" while the operator is approving on phone.
+            reauth = session.reauth_snapshot()
+            if reauth.status == "awaiting_approval" or snap.last_error == "reauth_in_progress":
+                return
+
             error = snap.last_error or "robinhood_login_required"
             status = "rate_limited" if error == "robinhood_rate_limited" else "logged_out"
             if not should_alert_session_status(status):
