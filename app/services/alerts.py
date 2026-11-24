@@ -16,6 +16,7 @@ _NTFY_PRIORITY = {
     "worker_error": "4",
     "robinhood_auth_failed": "5",
     "robinhood_auth_age": "4",
+    "robinhood_logged_out": "4",
     "x_feed_recovered": "3",
 }
 

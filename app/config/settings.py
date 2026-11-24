@@ -107,11 +107,24 @@ class Settings(BaseSettings):
     bot_managers: str | None = None
     bot_managers_enable_all: bool = False
     robinhood_login_retry_seconds: int = 300
-    robinhood_login_429_backoff_seconds: int = 900
+    # Device-approval 429s need a long cool-down; pyhood observes 5–10 min lockouts,
+    # but approval-poll spam has locked us for hours — keep a multi-hour floor.
+    robinhood_login_429_backoff_seconds: int = 21600
     robinhood_session_validate_seconds: int = 120
+    # Observed RH access-token life is ~5–8 days; refresh before hard expiry.
     robinhood_pickle_max_age_days: float = 6.0
     robinhood_pickle_warn_days: float = 1.0
-    robinhood_reauth_timeout_seconds: int = 180
+    # Proactively exchange refresh_token this many days before max age (no phone).
+    robinhood_refresh_before_expiry_days: float = 2.0
+    # Give the phone tap enough time; early 429 abort was burning the one try.
+    robinhood_reauth_timeout_seconds: int = 420
+    robinhood_reauth_poll_seconds: float = 20.0
+    # 0 = wait until timeout instead of failing after N empty/429 polls.
+    robinhood_reauth_max_empty_polls: int = 0
+    # Skip get_prompts_status (429 hotspot); wait for /robinhood/reauth/confirm-approval.
+    robinhood_reauth_skip_status_poll: bool = True
+    # How often maintenance may attempt a silent OAuth refresh (not password login).
+    robinhood_refresh_check_seconds: int = 3600
 
     log_level: str = "INFO"
     log_file: str = "logs/bot.log"

@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 
 from app.config.settings import Settings
 from app.execution.robinhood_auth_age import (
+    clear_session_alert,
     compute_auth_age,
     mark_auth_alert_sent,
+    mark_session_alert_sent,
     should_alert_auth_status,
+    should_alert_session_status,
 )
 from app.execution.robinhood_broker import RobinhoodBroker
 from app.ingestion.backfill_lock import backfill_in_progress
@@ -69,6 +72,7 @@ class BotOrchestrator:
         self._last_error: str | None = None
         self._last_snapshot_at = 0.0
         self._last_digest_rebuild_at = 0.0
+        self._last_rh_refresh_check_at = 0.0
         self._feed_idle: bool | None = None
         self._host_chrome_stopped = False
 
@@ -314,6 +318,8 @@ class BotOrchestrator:
     async def _run_maintenance(self, *, had_activity: bool) -> None:
         now_mono = time.monotonic()
 
+        await self._maybe_refresh_robinhood_session(now_mono)
+        await self._maybe_alert_robinhood_session()
         await self._maybe_alert_robinhood_auth_age()
 
         if self.settings.snapshot_enabled:
@@ -357,6 +363,107 @@ class BotOrchestrator:
                 )
 
         await self._maybe_digest_checkpoints()
+
+    def _robinhood_session_manager(self):
+        for manager in self.managers:
+            broker = getattr(manager, "broker", None)
+            if isinstance(broker, RobinhoodBroker):
+                return broker._session
+        return None
+
+    async def _maybe_refresh_robinhood_session(self, now_mono: float) -> None:
+        """Silent OAuth restore/refresh only — never password + device approval."""
+        if self.settings.broker_backend != "robinhood":
+            return
+        interval = max(60, int(self.settings.robinhood_refresh_check_seconds))
+        if now_mono - self._last_rh_refresh_check_at < interval:
+            return
+        self._last_rh_refresh_check_at = now_mono
+
+        session = self._robinhood_session_manager()
+        if session is None:
+            return
+
+        snap = session.snapshot()
+        age = compute_auth_age(
+            max_age_days=self.settings.robinhood_pickle_max_age_days,
+            warn_days=self.settings.robinhood_pickle_warn_days,
+        )
+        refresh_lead = max(0.0, float(self.settings.robinhood_refresh_before_expiry_days))
+        near_expiry = (
+            age.days_remaining is not None and age.days_remaining <= refresh_lead
+        )
+        # Refresh when logged out, or proactively before access-token expiry.
+        if snap.logged_in and not near_expiry:
+            return
+
+        try:
+            error = await asyncio.to_thread(session.ensure_session)
+            if error:
+                self.logger.info(
+                    "robinhood_silent_refresh_pending",
+                    extra={"event_type": "robinhood_auth", "error": error},
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "robinhood_silent_refresh_failed",
+                extra={"event_type": "robinhood_auth", "error": str(exc)},
+            )
+
+    async def _maybe_alert_robinhood_session(self) -> None:
+        """One notification when logged out / rate-limited; reset after login."""
+        if self.settings.broker_backend != "robinhood":
+            return
+        if not self.alert_service:
+            return
+
+        session = self._robinhood_session_manager()
+        if session is None:
+            return
+
+        try:
+            snap = session.snapshot()
+            if snap.logged_in:
+                clear_session_alert()
+                return
+
+            # Intentional dashboard reauth clears logged_in mid-flight; don't
+            # spam "not logged in" while the operator is approving on phone.
+            reauth = session.reauth_snapshot()
+            if reauth.status == "awaiting_approval" or snap.last_error == "reauth_in_progress":
+                return
+
+            error = snap.last_error or "robinhood_login_required"
+            status = "rate_limited" if error == "robinhood_rate_limited" else "logged_out"
+            if not should_alert_session_status(status):
+                return
+
+            if status == "rate_limited":
+                hours = max(
+                    1,
+                    int(round(self.settings.robinhood_login_429_backoff_seconds / 3600)),
+                )
+                text = (
+                    f"Robinhood API rate-limited. Auto-login paused ~{hours}h. "
+                    "After the cool-down, use dashboard Refresh RH auth once."
+                )
+            else:
+                text = (
+                    "Robinhood is not logged in. The bot will not place live orders. "
+                    "Use dashboard Refresh RH auth (approve on phone) when ready."
+                )
+
+            await self.alert_service.send(
+                "robinhood_logged_out",
+                {"status": status, "error": error, "text": text},
+                key=f"robinhood_logged_out:{status}",
+            )
+            mark_session_alert_sent(status)
+        except Exception as exc:
+            self.logger.warning(
+                "robinhood_session_alert_failed",
+                extra={"event_type": "robinhood_auth", "error": str(exc)},
+            )
 
     async def _maybe_alert_robinhood_auth_age(self) -> None:
         if self.settings.broker_backend != "robinhood":

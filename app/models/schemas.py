@@ -140,6 +140,9 @@ class HealthResponse(BaseModel):
     robinhood_auth_refresh_due_at: datetime | None = None
     robinhood_auth_status: str | None = None
     robinhood_reauth_status: str | None = None
+    robinhood_reauth_prompt_ready: bool | None = None
+    robinhood_reauth_code_needed: bool | None = None
+    robinhood_reauth_challenge_type: str | None = None
     x_feed_last_success_at: datetime | None = None
     x_feed_consecutive_failures: int = 0
     x_feed_last_error: str | None = None
@@ -154,6 +157,13 @@ class RobinhoodReauthStatusResponse(BaseModel):
     finished_at: datetime | None = None
     error: str | None = None
     message: str | None = None
+    prompt_ready: bool = False
+    code_needed: bool = False
+    challenge_type: str | None = None
+
+
+class RobinhoodReauthCodeRequest(BaseModel):
+    code: str
 
 
 class DashboardTweetRead(TweetRead):

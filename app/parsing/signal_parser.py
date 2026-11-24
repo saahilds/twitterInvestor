@@ -7,6 +7,7 @@ from app.models.db_models import SignalAction
 from app.models.schemas import TradeSignal
 from app.parsing.buy_conviction import infer_buy_conviction
 from app.parsing.buy_intent import is_affirmative_buy_intent
+from app.parsing.options_intent import is_options_contract_language
 from app.parsing.portfolio_allocation import infer_portfolio_allocation_pct
 from app.parsing.sell_fraction import (
     has_explicit_sell_sizing,
@@ -15,6 +16,7 @@ from app.parsing.sell_fraction import (
 )
 from app.parsing.sell_intent import is_affirmative_sell_intent
 from app.parsing.signal_segments import SignalSegment, segment_trade_units
+from app.parsing.stop_loss_intent import is_stop_loss_setup
 from app.parsing.watch_conviction import WatchConviction, infer_watch_conviction
 from app.parsing.word_forms import keyword_match_pattern
 
@@ -46,6 +48,9 @@ class RuleBasedSignalParser:
             "% port": 4,
             "port in": 3,
             "upsize": 3,
+            "swapped for": 3,
+            "swapped into": 3,
+            "swap for": 3,
         }
         self.sell_keywords: dict[str, int] = {
             "trim": 3,
@@ -86,6 +91,10 @@ class RuleBasedSignalParser:
         local = segment.local_text
         normalized = local.lower()
         ticker = segment.ticker
+
+        # Unsupported order types — keep as IGNORE until first-class support exists.
+        if is_stop_loss_setup(local) or is_options_contract_language(local):
+            return self._ignore_signal(local, source_tweet_id, reason_score=0, ticker=ticker)
 
         buy_score = self._score(normalized, self.buy_keywords)
         sell_score = self._score(normalized, self.sell_keywords)

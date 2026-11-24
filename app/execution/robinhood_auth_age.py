@@ -65,8 +65,44 @@ def write_auth_meta(updates: dict[str, Any]) -> dict[str, Any]:
 def record_successful_auth(*, moment: datetime | None = None) -> datetime:
     """Persist last successful Robinhood authentication time."""
     stamped = _as_utc(moment or datetime.now(timezone.utc))
-    write_auth_meta({"last_authenticated_at": stamped.isoformat()})
+    write_auth_meta(
+        {
+            "last_authenticated_at": stamped.isoformat(),
+            "login_blocked_until": None,
+            "login_blocked_reason": None,
+            "last_alert_status": "ok",
+            "last_session_alert_status": "ok",
+        }
+    )
     return stamped
+
+
+def set_login_block(*, until: datetime, reason: str) -> None:
+    """Persist an auto-login cool-down that survives process restarts."""
+    stamped = _as_utc(until)
+    write_auth_meta(
+        {
+            "login_blocked_until": stamped.isoformat(),
+            "login_blocked_reason": reason,
+        }
+    )
+
+
+def clear_login_block() -> None:
+    write_auth_meta({"login_blocked_until": None, "login_blocked_reason": None})
+
+
+def read_login_block(*, now: datetime | None = None) -> tuple[datetime | None, str | None]:
+    """Return (blocked_until, reason) when auto-login should stay off."""
+    meta = read_auth_meta()
+    until = _parse_iso(meta.get("login_blocked_until"))
+    if until is None:
+        return None, None
+    moment = _as_utc(now or datetime.now(timezone.utc))
+    if until <= moment:
+        return None, None
+    reason = meta.get("login_blocked_reason")
+    return until, str(reason) if reason else "robinhood_login_blocked"
 
 
 def seed_auth_meta_from_pickle_mtime() -> datetime | None:
@@ -162,3 +198,23 @@ def should_alert_auth_status(status: AuthStatus) -> bool:
 
 def mark_auth_alert_sent(status: AuthStatus) -> None:
     write_auth_meta({"last_alert_status": status})
+
+
+SessionAlertStatus = Literal["logged_out", "rate_limited", "ok"]
+
+
+def should_alert_session_status(status: SessionAlertStatus) -> bool:
+    """Alert once per logged-out / rate-limited state until cleared by login."""
+    if status == "ok":
+        return False
+    meta = read_auth_meta()
+    return meta.get("last_session_alert_status") != status
+
+
+def mark_session_alert_sent(status: SessionAlertStatus) -> None:
+    write_auth_meta({"last_session_alert_status": status})
+
+
+def clear_session_alert() -> None:
+    """Reset so the next logout / rate-limit can notify again."""
+    write_auth_meta({"last_session_alert_status": "ok"})

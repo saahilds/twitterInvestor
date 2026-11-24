@@ -167,11 +167,45 @@ orchestrator = BotOrchestrator(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if settings.broker_backend == "robinhood":
+        from app.execution.robinhood_auth_age import pickle_path
+
         manager_to_account: dict[str, str] = {}
         for cfg in manager_configs:
             broker = brokers_by_manager.get(cfg.id)
             if isinstance(broker, RobinhoodBroker):
-                login_error = await asyncio.to_thread(broker._ensure_live_session)
+                # No usable OAuth session → skip blocking device-approval during
+                # boot. Placeholder pickles only keep device_token for manual
+                # reauth (dashboard Refresh RH auth).
+                from app.execution.robinhood_token_refresh import (
+                    is_placeholder_session,
+                    load_pickle_session,
+                )
+
+                session_data = load_pickle_session()
+                if session_data is None or is_placeholder_session(session_data):
+                    logger.warning(
+                        "robinhood_startup_skip_no_usable_session",
+                        extra={
+                            "event_type": "robinhood_auth",
+                            "placeholder": bool(
+                                session_data and is_placeholder_session(session_data)
+                            ),
+                        },
+                    )
+                    continue
+                # Bound startup so a rate-limited device-approval poll cannot
+                # hold /health offline for the full reauth timeout.
+                try:
+                    login_error = await asyncio.wait_for(
+                        asyncio.to_thread(broker._ensure_live_session),
+                        timeout=45,
+                    )
+                except TimeoutError:
+                    login_error = "robinhood_startup_login_timeout"
+                    logger.warning(
+                        "robinhood_startup_login_timeout",
+                        extra={"event_type": "robinhood_auth", "timeout_seconds": 45},
+                    )
                 if login_error is None and broker._account_number:
                     manager_to_account[cfg.id] = broker._account_number
         if manager_to_account:
