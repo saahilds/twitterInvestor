@@ -21,9 +21,12 @@ from app.execution.robinhood_auth_age import (
 from app.execution.robinhood_device_approval import (
     RobinhoodRateLimitedError,
     RobinhoodVerificationTimeout,
+    is_code_needed,
     is_prompt_ready,
     patch_device_approval,
+    pending_challenge_type,
     signal_approval_confirmed,
+    submit_challenge_code,
     take_last_error,
 )
 from app.execution.robinhood_token_refresh import (
@@ -194,6 +197,32 @@ class RobinhoodSessionManager:
                 self._reauth.message = (
                     "Approval recorded — finishing login without get_prompts_status."
                 )
+        return self.reauth_snapshot()
+
+    def submit_reauth_code(self, code: str) -> ReauthJobSnapshot:
+        """Submit SMS/email verification code for the in-flight reauth."""
+        with self._lock:
+            if self._reauth.status != "awaiting_approval":
+                self._reauth.message = (
+                    f"No reauth awaiting a code (status={self._reauth.status})."
+                )
+                return self.reauth_snapshot()
+
+        if not is_code_needed():
+            kind = pending_challenge_type()
+            with self._lock:
+                self._reauth.message = (
+                    "No SMS/email code challenge is pending right now"
+                    + (f" (last type={kind})." if kind else ".")
+                )
+            return self.reauth_snapshot()
+
+        if submit_challenge_code(code):
+            with self._lock:
+                self._reauth.message = "Code submitted — finishing Robinhood login."
+        else:
+            with self._lock:
+                self._reauth.message = "Code was empty or could not be accepted."
         return self.reauth_snapshot()
 
     def ensure_session(self, *, force: bool = False) -> str | None:

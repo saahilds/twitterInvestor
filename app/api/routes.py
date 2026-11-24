@@ -44,6 +44,7 @@ from app.models.schemas import (
     ReviewQueueItem,
     ReviewQueueLabelCreate,
     ReviewQueueLabelRead,
+    RobinhoodReauthCodeRequest,
     RobinhoodReauthStatusResponse,
     PortfolioChartResponse,
     PortfolioChartSummary,
@@ -264,6 +265,24 @@ def create_router(
         if rh_session is None:
             raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
         job = await asyncio.to_thread(rh_session.confirm_reauth_approval)
+        return RobinhoodReauthStatusResponse(
+            status=job.status,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            error=job.error,
+            message=job.message,
+        )
+
+    @router.post("/robinhood/reauth/submit-code", response_model=RobinhoodReauthStatusResponse)
+    async def submit_robinhood_reauth_code(
+        body: RobinhoodReauthCodeRequest,
+    ) -> RobinhoodReauthStatusResponse:
+        """Submit SMS/email verification code during an in-flight reauth."""
+        if settings.broker_backend != "robinhood":
+            raise HTTPException(status_code=400, detail="broker_backend_is_not_robinhood")
+        if rh_session is None:
+            raise HTTPException(status_code=503, detail="robinhood_session_unavailable")
+        job = await asyncio.to_thread(rh_session.submit_reauth_code, body.code)
         return RobinhoodReauthStatusResponse(
             status=job.status,
             started_at=job.started_at,

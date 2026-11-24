@@ -156,6 +156,10 @@ class RobinhoodReauthStatusResponse(BaseModel):
     message: str | None = None
 
 
+class RobinhoodReauthCodeRequest(BaseModel):
+    code: str
+
+
 class DashboardTweetRead(TweetRead):
     signal_action: str | None = None
     signal_ticker: str | None = None

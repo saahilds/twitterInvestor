@@ -25,6 +25,13 @@ _last_error: BaseException | None = None
 _approval_confirmed = threading.Event()
 # Set once Robinhood has issued a device-approval prompt for this login.
 _prompt_ready = threading.Event()
+# SMS/email challenge: wait for POST /robinhood/reauth/submit-code.
+_code_needed = threading.Event()
+_code_submitted = threading.Event()
+_pending_challenge_id: str | None = None
+_pending_challenge_type: str | None = None
+_pending_code: str | None = None
+_code_lock = threading.Lock()
 
 
 class RobinhoodRateLimitedError(RuntimeError):
@@ -48,8 +55,15 @@ def _set_last_error(exc: BaseException) -> None:
 
 
 def clear_approval_signals() -> None:
+    global _pending_challenge_id, _pending_challenge_type, _pending_code
     _approval_confirmed.clear()
     _prompt_ready.clear()
+    _code_needed.clear()
+    _code_submitted.clear()
+    with _code_lock:
+        _pending_challenge_id = None
+        _pending_challenge_type = None
+        _pending_code = None
 
 
 def signal_approval_confirmed() -> bool:
@@ -70,6 +84,35 @@ def is_prompt_ready() -> bool:
 
 def is_approval_confirmed() -> bool:
     return _approval_confirmed.is_set()
+
+
+def is_code_needed() -> bool:
+    return _code_needed.is_set() and not _code_submitted.is_set()
+
+
+def pending_challenge_type() -> str | None:
+    return _pending_challenge_type
+
+
+def submit_challenge_code(code: str) -> bool:
+    """Provide the SMS/email code for the in-flight challenge."""
+    global _pending_code
+    cleaned = "".join(ch for ch in str(code).strip() if ch.isalnum())
+    if not cleaned:
+        return False
+    if not _code_needed.is_set() or _pending_challenge_id is None:
+        return False
+    with _code_lock:
+        _pending_code = cleaned
+    _code_submitted.set()
+    logger.info(
+        "robinhood_challenge_code_submitted",
+        extra={
+            "event_type": "robinhood_auth",
+            "challenge_type": _pending_challenge_type,
+        },
+    )
+    return True
 
 
 def _challenge_status(payload: Any) -> str | None:
@@ -179,10 +222,13 @@ def validate_sheriff_id(
                 break
 
             if challenge_type in {"sms", "email"} and challenge_status == "issued":
-                raise RobinhoodVerificationTimeout(
-                    f"Robinhood requested {challenge_type} verification; "
-                    "use device approval in the app instead"
+                _handle_code_challenge(
+                    challenge_id=str(challenge_id),
+                    challenge_type=str(challenge_type),
+                    deadline=deadline,
+                    poll_seconds=poll,
                 )
+                break
 
     else:
         raise RobinhoodVerificationTimeout(
@@ -252,6 +298,69 @@ def _poll_prompt_status(
     raise RobinhoodVerificationTimeout("Device approval not confirmed within timeout")
 
 
+def _handle_code_challenge(
+    *,
+    challenge_id: str,
+    challenge_type: str,
+    deadline: float,
+    poll_seconds: float,
+) -> None:
+    """Wait for operator-submitted SMS/email code, then respond to Robinhood."""
+    global _pending_challenge_id, _pending_challenge_type
+    from robin_stocks.robinhood.helper import request_post
+
+    with _code_lock:
+        _pending_challenge_id = challenge_id
+        _pending_challenge_type = challenge_type
+    _code_submitted.clear()
+    _code_needed.set()
+    print(
+        f"Robinhood sent a {challenge_type} code — "
+        "POST /robinhood/reauth/submit-code with the code."
+    )
+    logger.info(
+        "robinhood_challenge_code_needed",
+        extra={"event_type": "robinhood_auth", "challenge_type": challenge_type},
+    )
+
+    while time.monotonic() < deadline:
+        remaining = max(0.5, deadline - time.monotonic())
+        if _code_submitted.wait(timeout=min(poll_seconds, remaining)):
+            break
+    else:
+        raise RobinhoodVerificationTimeout(
+            f"{challenge_type} code not submitted within timeout"
+        )
+
+    with _code_lock:
+        code = _pending_code
+    if not code:
+        raise RobinhoodVerificationTimeout(f"empty {challenge_type} code")
+
+    challenge_url = f"https://api.robinhood.com/challenge/{challenge_id}/respond/"
+    challenge_response = request_post(
+        url=challenge_url, payload={"response": code}
+    )
+    status = None
+    if isinstance(challenge_response, dict):
+        status = challenge_response.get("status")
+    if status != "validated":
+        raise RobinhoodVerificationTimeout(
+            f"{challenge_type} code rejected (status={status!r})"
+        )
+    print(f"{challenge_type} verification successful!")
+
+
+def _extract_challenge(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    context = payload.get("context")
+    if not isinstance(context, dict):
+        return None
+    challenge = context.get("sheriff_challenge")
+    return challenge if isinstance(challenge, dict) else None
+
+
 def _finish_workflow(*, machine_id: str, deadline: float, poll_seconds: float) -> None:
     from robin_stocks.robinhood.helper import request_post
 
@@ -276,6 +385,26 @@ def _finish_workflow(*, machine_id: str, deadline: float, poll_seconds: float) -
             retry_attempts -= 1
             time.sleep(poll_seconds)
             continue
+
+        challenge = _extract_challenge(inquiries_response)
+        if challenge:
+            challenge_type = str(challenge.get("type") or "")
+            challenge_status = str(challenge.get("status") or "")
+            challenge_id = challenge.get("id")
+            if (
+                challenge_type in {"sms", "email"}
+                and challenge_status == "issued"
+                and challenge_id
+            ):
+                _handle_code_challenge(
+                    challenge_id=str(challenge_id),
+                    challenge_type=challenge_type,
+                    deadline=deadline,
+                    poll_seconds=poll_seconds,
+                )
+                # After validating the code, keep continuing the workflow.
+                retry_attempts = 8
+                continue
 
         type_context = (
             inquiries_response.get("type_context")
